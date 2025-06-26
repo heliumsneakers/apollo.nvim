@@ -2,7 +2,7 @@
 -- Implementation agent: collects user intent ➜ pseudocode ➜ final code, using
 -- both LSP symbols *and* the contents of the CURRENT buffer (so the model can
 -- infer where the snippet belongs – e.g. inside `main.cpp`).
--- Output is streamed and appended to a floating markdown window line-by-line,
+-- Output is streamed and appended to a floating markdown window line‑by‑line,
 -- mimicking ApolloChat’s flush logic.
 
 local api, lsp = vim.api, vim.lsp
@@ -99,7 +99,7 @@ local function step2(user_prompt, pseudocode)
   for w in pairs(kw_map) do keywords[#keywords+1] = w end
 
   local symbols  = collect_symbol_context(keywords, 5, 60)
-  local file_ctx = current_buffer_excerpt(128000)
+  local file_ctx = current_buffer_excerpt(400)
 
   local payload = {
     model = 'gemma3-4b-it', stream = true,
@@ -135,17 +135,60 @@ end
 -- STEP 1: pseudocode ----------------------------------------------------------
 --------------------------------------------------
 local function step1(prompt)
-  local acc = {}
+  local acc, finished = {}, false
+
   local payload = {
     model = 'gemma3-4b-it', stream = true,
     messages = {
-      { role = 'system', content = [[You are PseudoGPT. Produce concise pseudocode (no comments) for the request. Output only pseudocode.]] },
+      { role = 'system', content = [[You are PseudoGPT. Produce concise pseudocode for the request. Output only pseudocode. Make sure to explain details toward achieving the implementation specifics.]] },
       { role = 'user', content = prompt },
     }
   }
 
-  http_stream(payload, function(_, data)
-    if not data then return end
+  local function maybe_finish()
+    if not finished then
+      finished = true
+      -- flush any trailing fragment
+      if M.pending ~= '' then
+        api.nvim_buf_set_option(M.resp_buf, 'modifiable', true)
+        api.nvim_buf_set_lines(M.resp_buf, -1, -1, false, { M.pending })
+        api.nvim_buf_set_option(M.resp_buf, 'modifiable', false)
+        acc[#acc+1] = M.pending
+        M.pending = ''
+      end
+      step2(prompt, table.concat(acc, ""))
+    end
+  end
+
+  local jid = vim.fn.jobstart({
+    "curl", "-s", "-N", "-X", "POST", endpoint,
+    "-H", "Content-Type: application/json", "-d", vim.fn.json_encode(payload)
+  }, {
+    stdout_buffered = false,
+    on_stdout = function(_, data)
+      if not data then return end
+      for _, raw in ipairs(data) do
+        if type(raw) == 'string' and raw:sub(1,6) == 'data: ' then
+          local js = raw:sub(7)
+          if js == '[DONE]' then
+            maybe_finish()
+            return
+          end
+          local ok, chunk = pcall(vim.fn.json_decode, js)
+          if ok and chunk.choices then
+            local txt = chunk.choices[1].delta.content
+            if type(txt) == 'string' then
+              acc[#acc+1] = txt
+              flush_stream(txt)
+            end
+          end
+        end
+      end
+    end,
+    on_stderr = function() end,
+    on_exit   = function() maybe_finish() end,
+  })
+end
     for _, raw in ipairs(data) do
       if type(raw) == 'string' and raw:sub(1,6) == 'data: ' then
         local js = raw:sub(7)
@@ -163,9 +206,6 @@ local function step1(prompt)
         end
       end
     end
-  end)
-end
-
 --------------------------------------------------
 -- prompt UI -------------------------------------------------------------------
 --------------------------------------------------
