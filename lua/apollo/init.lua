@@ -84,7 +84,7 @@ function M.open_ui()
   -- Populate with splash or history (no centering)
   api.nvim_buf_set_option(M.resp_buf, 'modifiable', true)
   if #M.history_lines == 0 then
-    api.nvim_buf_set_lines(M.resp_buf, 0, -1, false, splash())
+    api.nvim_buf_set_lines(M.resp_buf, width/2, resp_h/4, false, splash())
   else
     api.nvim_buf_set_lines(M.resp_buf, 0, -1, false, M.history_lines)
   end
