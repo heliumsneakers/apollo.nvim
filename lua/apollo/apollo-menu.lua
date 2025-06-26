@@ -96,7 +96,7 @@ function Menu.open()
     width    = width,
     height   = height,
     style    = 'minimal',
-    border   = 'rounded',
+    border = { "▛", "▀", "▜", "▐", "▟", "▄", "▙", "▌" },
   })
 
   api.nvim_win_set_option(Menu.win, 'cursorline', true)
