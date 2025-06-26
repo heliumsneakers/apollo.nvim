@@ -99,7 +99,7 @@ local function step2(user_prompt, pseudocode)
   for w in pairs(kw_map) do keywords[#keywords+1] = w end
 
   local symbols  = collect_symbol_context(keywords, 5, 60)
-  local file_ctx = current_buffer_excerpt(400)
+  local file_ctx = current_buffer_excerpt(128000)
 
   local payload = {
     model = 'gemma3-4b-it', stream = true,
