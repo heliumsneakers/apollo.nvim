@@ -5,15 +5,14 @@ local Menu = {}
 -- internal state
 Menu.buf = nil
 Menu.win = nil
-Menu.items = {}   -- { label = "Apollo Chat", cmd = "ApolloChat" }
-
+Menu.items = {}
 --------------------------------------------------
 -- Declare commands to expose in the picker
 --------------------------------------------------
 local COMMANDS = {
-  { cmd = "ApolloChat", label = "Apollo Chat"  },
-  { cmd = "ApolloQuit", label = "Apollo Quit"  },
-  -- add more here if you register new :Apollo* commands
+  { cmd = "ApolloChat", label = "Apollo Chat" },
+  { cmd = "ApolloImpl", label = "Apollo Implement" },
+  { cmd = "ApolloQuit", label = "Reset Chat Context" },
 }
 
 --------------------------------------------------
