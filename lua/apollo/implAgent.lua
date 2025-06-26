@@ -104,7 +104,7 @@ local function step2(user_prompt,pseudo,file_path)
   local payload={
     model='gemma3-4b-it',stream=true,
     messages={
-      {role='system',content=[[You are CodeGenGPT. Using the provided pseudocode, workspace symbols, and the selected file's content, output ONLY one fenced markdown code block (or unified diff) implementing the feature the code block should be in the language reflected in the file. NO other text.]]},
+      {role='system',content=[[You are CodeGenGPT. Using the provided pseudocode, workspace symbols, and the selected file's content, output ONLY one fenced markdown code block (or unified diff) implementing the feature the code block should be in the language reflected in the file. Only provide the necessary snippets, and define where in the file the snippet must be placed, for example below function foo(), above function bar() etc... NO other text.]]},
       {role='user',content='User request:\n'..user_prompt},
       {role='user',content='Pseudocode:\n'..pseudo},
       {role='user',content='Workspace symbols:\n'..symbols},
