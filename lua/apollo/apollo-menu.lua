@@ -108,6 +108,7 @@ end
   --------------------------------------------------
   function Menu.setup()
     api.nvim_create_user_command('ApolloMenu', function() Menu.open() end, {})
+    vim.keymap.set({"n"}, "<leader>|", function() Menu.open() end, {desc = "Open apollo.nvim menu"})
   end
 
   return Menu
