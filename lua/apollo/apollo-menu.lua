@@ -93,18 +93,21 @@ function Menu.open()
   api.nvim_win_set_option(Menu.win, 'wrap', false)
 
   -- keymaps
-  local opts = { noremap = true, silent = true, nowait = true, buffer = Menu.buf }
-  api.nvim_buf_set_keymap(Menu.buf, 'n', '<CR>',        "<Cmd>lua require('apollo.menu').execute()<CR>", opts)
-  api.nvim_buf_set_keymap(Menu.buf, 'n', '<LeftMouse>', "<Cmd>lua require('apollo.menu').execute()<CR>", opts)
-  api.nvim_buf_set_keymap(Menu.buf, 'n', 'q',           "<Cmd>lua require('apollo.menu').close()<CR>",   opts)
-  api.nvim_buf_set_keymap(Menu.buf, 'n', '<Esc>',       "<Cmd>lua require('apollo.menu').close()<CR>",   opts)
+  local map = function(lhs, rhs)
+    vim.keymap.set('n', lhs, rhs, { buffer = Menu.buf, silent = true, nowait = true })
+  end
+
+  map('<CR>',        function() Menu.execute() end)
+  map('<LeftMouse>', function() Menu.execute() end)
+  map('q',           function() Menu.close()   end)
+  map('<Esc>',       function() Menu.close()   end)
 end
 
---------------------------------------------------
--- Public: add :ApolloMenu user command
---------------------------------------------------
-function Menu.setup()
-  api.nvim_create_user_command('ApolloMenu', function() Menu.open() end, {})
-end
+  --------------------------------------------------
+  -- Public: add :ApolloMenu user command
+  --------------------------------------------------
+  function Menu.setup()
+    api.nvim_create_user_command('ApolloMenu', function() Menu.open() end, {})
+  end
 
-return Menu
+  return Menu
