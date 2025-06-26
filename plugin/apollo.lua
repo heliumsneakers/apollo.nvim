@@ -4,3 +4,4 @@ vim.g.loaded_apollo = true
 
 -- Safe-load with defaults; users can override via lazy.nvim `opts = {…}`
 pcall(function() require('apollo').setup({}) end)
+pcall(function() require('apollo.menu').setup({}) end)

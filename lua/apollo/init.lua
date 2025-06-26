@@ -3,8 +3,6 @@ local api = vim.api
 
 local M = { history_lines = {} }
 
-require("apollo.menu").setup()
-
 --------------------------------------------------
 -- Utility: flatten any accidental newlines in the
 -- prompt buffer so the user always edits a single
