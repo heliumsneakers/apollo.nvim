@@ -1,13 +1,21 @@
--- plugin/apollo.lua  (tiny shim – runs automatically)
-
+-- plugin/apollo.lua
 if vim.g.loaded_apollo then return end
 vim.g.loaded_apollo = true
 
-pcall(function()
-	-- main chat UI
-	require('apollo').setup()
+local function load(mod)
+  local ok, pack = pcall(require, mod)
+  if not ok then
+    vim.notify('[apollo.nvim] '..pack, vim.log.levels.ERROR)
+    return
+  end
+  if type(pack.setup) == 'function' then
+    local ok2, err = pcall(pack.setup)
+    if not ok2 then
+      vim.notify('[apollo.nvim] '..err, vim.log.levels.ERROR)
+    end
+  end
+end
 
-	-- new floating-menu picker  ← add this
-	require('apollo.apollo-menu').setup()
-	require('apollo.impl-agent').setup()
-end)
+load('apollo')               -- main chat UI
+load('apollo.apollo-menu')    -- menu (works)
+load('apollo.impl-agent')     -- Implementation agent
