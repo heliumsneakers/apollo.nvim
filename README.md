@@ -1,2 +1,2 @@
 # apollo.nvim
-llama.cpp gemma3 integration directly inside of neovim, local, open source, tree-sitter and LSP based contexts for serious developers.
+Not a vibe coding agent suite, something that aims to understand your workspace and answer questions, offer changes, document and comment on implementation specs.
