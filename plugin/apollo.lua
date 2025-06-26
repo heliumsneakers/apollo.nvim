@@ -17,5 +17,5 @@ local function load(mod)
 end
 
 load('apollo')               -- main chat UI
-load('apollo.apollo-menu')    -- menu (works)
-load('apollo.impl-agent')     -- Implementation agent
+load('apollo.apollo_menu')    -- menu (works)
+load('apollo.impl_agent')     -- Implementation agent
