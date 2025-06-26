@@ -5,12 +5,9 @@ vim.g.loaded_apollo = true
 
 pcall(function()
 	-- main chat UI
-	require('apollo').setup({})
+	require('apollo').setup()
 
-	-- floating-menu picker
+	-- new floating-menu picker  ← add this
 	require('apollo.apollo-menu').setup()
-
-	-- code snippet implementation agent
 	require('apollo.impl-agent').setup()
-end
-)
+end)
