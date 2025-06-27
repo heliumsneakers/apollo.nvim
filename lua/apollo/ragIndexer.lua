@@ -39,7 +39,7 @@ local function embed(text)
     '-d', vim.fn.json_encode(payload),
   })
 
-  -- If server sent an error block, surface it
+  -- If Server sent an error block, surface it
   if res.error then
     error(('embedding error %s: %s')
           :format(res.error.code or '', res.error.message or 'unknown'))
@@ -70,37 +70,75 @@ local function open_db()
   return db
 end
 
--- ── embed one file ────────────────────────────────────────────────────────
+local CHUNK_SIZE = 8 * 1024        -- 8 KB per request (adjust if needed)
+
+-- ── embed one file (chunk-aware) ───────────────────────────────────────────
 local function embed_file(path)
+  --------------------------------------------------------------------------
+  -- read file -------------------------------------------------------------
+  --------------------------------------------------------------------------
   local lines = vim.fn.readfile(path)
   if not lines[1] then
-    vim.notify('[RAG] cannot read '..path, vim.log.levels.WARN); return
-  end
-  local text = table.concat(lines, '\n')
-  local h    = hash(text)
-
-  ----------------------------------------------------------------
-  -- FIX: create DB first, then query it -------------------------
-  ----------------------------------------------------------------
-  local db   = open_db()
-  local row  = db:eval('SELECT 1 FROM '..cfg.tableName..' WHERE hash = ?', h)
-  if type(row) == 'table' and row[1] then
-    vim.notify('[RAG] already indexed '..path, vim.log.levels.INFO)
+    vim.notify('[RAG] cannot read '..path, vim.log.levels.WARN)
     return
   end
-  ----------------------------------------------------------------
 
-  vim.notify('[RAG] embedding '..path)
-  local vec = f32bin(embed(text))
-  db:insert(cfg.tableName, {
-    hash   = h,
-    file   = path,
-    symbol = path,
-    kind   = 0,
-    text   = text,
-    vec    = vec,
-  })
-  vim.notify('[RAG] inserted '..path)
+  --------------------------------------------------------------------------
+  -- slice into ~8 KB chunks on line boundaries ----------------------------
+  --------------------------------------------------------------------------
+  local chunks = {}
+  local acc, bytes, from = {}, 0, 1
+  for i, ln in ipairs(lines) do
+    bytes = bytes + #ln + 1          -- +1 for newline
+    acc[#acc+1] = ln
+    if bytes >= CHUNK_SIZE then
+      chunks[#chunks+1] = { start=from, stop=i,
+                            txt=table.concat(acc, '\n') }
+      acc, bytes, from = {}, 0, i + 1
+    end
+  end
+  if #acc > 0 then
+    chunks[#chunks+1] = { start=from, stop=#lines,
+                          txt=table.concat(acc, '\n') }
+  end
+
+  if vim.tbl_isempty(chunks) then return end
+
+  --------------------------------------------------------------------------
+  -- open DB once ----------------------------------------------------------
+  --------------------------------------------------------------------------
+  local db = open_db()
+
+  --------------------------------------------------------------------------
+  -- iterate chunks --------------------------------------------------------
+  --------------------------------------------------------------------------
+  for _, ck in ipairs(chunks) do
+    local key = hash(path..ck.start..ck.stop..ck.txt)
+
+    -- skip if already there
+    local row = db:eval('SELECT 1 FROM '..cfg.tableName..' WHERE hash = ?', key)
+    if type(row) == 'table' and row[1] then goto continue end
+
+    -- embed
+    local ok, vec_or_err = pcall(embed, ck.txt)
+    if not ok then
+      vim.notify('[RAG] embed failed: '..vec_or_err, vim.log.levels.ERROR)
+      goto continue
+    end
+
+    -- insert
+    db:insert(cfg.tableName, {
+      hash   = key,
+      file   = path,
+      symbol = ('%s:%d-%d'):format(path, ck.start, ck.stop),
+      kind   = 0,
+      text   = ck.txt,
+      vec    = f32bin(vec_or_err),
+    })
+    ::continue::
+  end
+
+  vim.notify('[RAG] finished embedding '..path)
 end
 
 -- ── collect active-LSP filetypes ──────────────────────────────────────────
