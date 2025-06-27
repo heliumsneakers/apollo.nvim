@@ -14,7 +14,7 @@
 -- Expose `:ApolloRagReindex` to (re)build.
 -----------------------------------------------------------------------------
 
-local sqlite = require('plenary.sqlite')
+local sqlite = require('sqlite')
 local hash   = vim.fn.sha256
 local uri_of = vim.uri_from_bufnr
 local M      = {}
