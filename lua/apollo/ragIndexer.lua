@@ -122,14 +122,14 @@ function M.reindex()
 end
 
 -- ── setup / user command ───────────────────────────────────────────────────
-function M.setup(opts)
-  apply(opts)
-  vim.api.nvim_create_user_command('ApolloRagReindex', function()
-    -- run in background thread to avoid freezing UI
-    vim.loop.new_thread(function()
-      pcall(M.reindex)
-    end)
-  end, {})
-end
+vim.api.nvim_create_user_command('ApolloRagReindex', function()
+  -- run on next event-loop tick (non-blocking, same Lua state)
+  vim.schedule(function()
+    local ok, err = pcall(M.reindex)
+    if not ok then
+      vim.notify('[Apollo] RAG reindex failed: '..err, vim.log.levels.ERROR)
+    end
+  end)
+end, {})
 
 return M
