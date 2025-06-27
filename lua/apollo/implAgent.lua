@@ -79,8 +79,13 @@ local function retrieve(question)
   return out
 end
 
--- ── streaming chat --------------------------------------------------------
+-- ── streaming chat 
 local function chat(prompt, out_buf)
+  local pending = ''
+
+  -- open for writing once
+  api.nvim_buf_set_option(out_buf, 'modifiable', true)
+
   fn.jobstart({
     'curl','-s','-N','-X','POST',cfg.chatEndpoint,
     '-H','Content-Type: application/json',
@@ -90,24 +95,41 @@ local function chat(prompt, out_buf)
       messages={{role='user',content=prompt}}
     }
   },{
+    stdout_buffered=false,
     on_stdout=function(_,data)
-      for _,ln in ipairs(data or {}) do
-        if ln:sub(1,6)=='data: ' then
-          local js = ln:sub(7)
-          if js~='[DONE]' then
-            local ok,p = pcall(fn.json_decode, js)
-            if ok and p.choices then
-              local delta = p.choices[1].delta.content
-              if delta then
-                api.nvim_buf_set_lines(out_buf,-1,-1,false,{delta})
-              end
+      if not data then return end
+      for _,ln in ipairs(data) do
+        if ln:sub(1,6) ~= 'data: ' then goto continue end
+        local js = ln:sub(7)
+        if js == '[DONE]' then
+          -- flush tail fragment
+          if #pending > 0 then
+            api.nvim_buf_set_lines(out_buf, -1, -1, false, { pending })
+          end
+          api.nvim_buf_set_option(out_buf, 'modifiable', false)
+          return
+        end
+        local ok, obj = pcall(fn.json_decode, js)
+        if ok and obj.choices then
+          local delta = obj.choices[1].delta.content
+          if type(delta) == 'string' then
+            pending = pending .. delta
+            local flush = {}
+            for line in pending:gmatch('(.-)\n') do
+              flush[#flush+1] = line
+            end
+            if #flush > 0 then
+              api.nvim_buf_set_lines(out_buf, -1, -1, false, flush)
+              pending = pending:match('.*\n(.*)') or ''
             end
           end
         end
+        ::continue::
       end
     end
   })
 end
+
 
 -- ── UI: prompt & output windows -----------------------------------------
 local State = { prompt_buf=nil,prompt_win=nil, resp_buf=nil,resp_win=nil }
