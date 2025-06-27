@@ -42,31 +42,41 @@ local function embed(text)
   -- If Server sent an error block, surface it
   if res.error then
     error(('embedding error %s: %s')
-          :format(res.error.code or '', res.error.message or 'unknown'))
+      :format(res.error.code or '', res.error.message or 'unknown'))
   end
 
   local vec = res
-           and res.data and res.data[1]
-           and res.data[1].embedding
+  and res.data and res.data[1]
+  and res.data[1].embedding
 
   assert(vec and #vec > 0,
-         ('empty embedding (response keys: %s)')
-         :format(table.concat(vim.tbl_keys(res), ', ')))
+    ('empty embedding (response keys: %s)')
+      :format(table.concat(vim.tbl_keys(res), ', ')))
   return vec
 end
 
-local function f32bin(tbl)
-  local out = {}; for _,v in ipairs(tbl) do out[#out+1] = string.pack('<f',v) end
-  return table.concat(out)
+local function vec_json(tbl)
+  return vim.fn.json_encode(tbl)  -- returns a compact '[0.12,-0.34,...]'
 end
 
 -- ── DB helpers ────────────────────────────────────────────────────────────
 local function open_db()
-  local db = sqlite{ uri=db_path(), create=true, opts={ keep_open=true } }
+  local db = sqlite{
+    uri   = db_path(),
+    create = true,
+    opts  = { keep_open = true },
+  }
+
   db:execute(([[
-    CREATE TABLE IF NOT EXISTS %s(
-      hash TEXT PRIMARY KEY, file TEXT, symbol TEXT, kind INT,
-      text TEXT, vec BLOB);]]):format(cfg.tableName))
+    CREATE TABLE IF NOT EXISTS %s (
+      hash   TEXT PRIMARY KEY,
+      file   TEXT,
+      symbol TEXT,
+      kind   INT,
+      text   TEXT,
+      vec    TEXT   -- store as JSON string
+    );]]):format(cfg.tableName))
+
   return db
 end
 
@@ -92,9 +102,13 @@ local function embed_file(path)
       vim.notify('[RAG] embed failed: '..vec, vim.log.levels.ERROR)
       return true  -- give up on this slice but continue others
     end
-    db:insert(cfg.tableName,{
-      hash=key, file=path, symbol=('%s:%d-%d'):format(path,start_ln,stop_ln),
-      kind=0, text=slice, vec=f32bin(vec)
+    db:insert(cfg.tableName, {
+      hash   = key,
+      file   = path,
+      symbol = ('%s:%d-%d'):format(path,start_ln,stop_ln),
+      kind   = 0,
+      text   = slice,
+      vec    = vec_json(vec),   -- <- use JSON string
     })
     return true
   end
