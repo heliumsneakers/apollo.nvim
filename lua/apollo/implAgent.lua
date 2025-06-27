@@ -65,34 +65,58 @@ end
 
 -- ── retrieve top-K --------------------------------------------------------
 local function retrieve(question)
-  local qvec          = embed(question)
-  local vecs, texts   = load_vectors()
-
-  -- Build keyword set from the question (length >3, lowercase)
-  local kw = {}
+  -------------------------------------------------
+  -- 0. keyword set from query --------------------
+  -------------------------------------------------
+  local qkw = {}
   for w in question:lower():gmatch('%w+') do
-    if #w > 3 then kw[w] = true end
+    if #w > 3 then qkw[w] = true end
   end
+  local qk_total = vim.tbl_count(qkw)
 
+  -------------------------------------------------
+  -- 1. semantic vector for query -----------------
+  -------------------------------------------------
+  local qvec        = embed(question)
+  local vecs, texts = load_vectors()
+
+  -------------------------------------------------
+  -- 2. scan & score chunks -----------------------
+  -------------------------------------------------
   local scored = {}
-  for i, v in ipairs(vecs) do
-    local base   = cosine(qvec, v)          -- semantic score
-    local bonus  = 0                        -- keyword hit boost
-    local t_low  = texts[i]:lower()
+  for idx, vec in ipairs(vecs) do
+    local txt  = texts[idx]
+    local low  = txt:lower()
 
-    for w in pairs(kw) do
-      if t_low:find(w, 1, true) then
-        bonus = bonus + 0.10               -- +0.10 per hit (tweakable)
-      end
+    -- (a) quick path-match check (we stored file path in the first line)
+    local path = low:match('^///%s*([^\n]+)') or ''
+    local path_hit = 0
+    for kw in pairs(qkw) do
+      if path:find(kw, 1, true) then path_hit = 1; break end
+    end
+    if path_hit == 0 and path:find('/audio') then
+      goto continue      -- hard-block obvious wrong domains (example)
     end
 
-    if bonus > 0 then                       -- ignore zero-overlap chunks
-      scored[#scored+1] = { idx = i, score = base + bonus }
+    -- (b) keyword coverage inside chunk
+    local hits = 0
+    for kw in pairs(qkw) do
+      if low:find(kw, 1, true) then hits = hits + 1 end
     end
+    if hits < 2 then goto continue end   -- require ≥2 distinct keywords
+
+    -- (c) hybrid score
+    local cover = hits / qk_total        -- 0-1
+    local score = cosine(qvec, vec) * cover * (1.0 + path_hit * 0.25)
+
+    scored[#scored+1] = { idx = idx, score = score }
+    ::continue::
   end
 
+  -------------------------------------------------
+  -- 3. top-K -------------------------------------
+  -------------------------------------------------
   table.sort(scored, function(a,b) return a.score > b.score end)
-
   local out = {}
   for i = 1, math.min(cfg.topK, #scored) do
     out[#out+1] = texts[scored[i].idx]
