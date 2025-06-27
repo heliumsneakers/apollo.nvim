@@ -70,74 +70,47 @@ local function open_db()
   return db
 end
 
-local CHUNK_SIZE = 8 * 1024        -- 8 KB per request (adjust if needed)
-
--- ── embed one file (chunk-aware) ───────────────────────────────────────────
+-- ── embed one file (adaptive chunk size) ───────────────────────────────────
 local function embed_file(path)
-  --------------------------------------------------------------------------
-  -- read file -------------------------------------------------------------
-  --------------------------------------------------------------------------
   local lines = vim.fn.readfile(path)
   if not lines[1] then
-    vim.notify('[RAG] cannot read '..path, vim.log.levels.WARN)
-    return
+    vim.notify('[RAG] cannot read '..path, vim.log.levels.WARN); return
   end
 
-  --------------------------------------------------------------------------
-  -- slice into ~8 KB chunks on line boundaries ----------------------------
-  --------------------------------------------------------------------------
-  local chunks = {}
-  local acc, bytes, from = {}, 0, 1
-  for i, ln in ipairs(lines) do
-    bytes = bytes + #ln + 1          -- +1 for newline
-    acc[#acc+1] = ln
-    if bytes >= CHUNK_SIZE then
-      chunks[#chunks+1] = { start=from, stop=i,
-                            txt=table.concat(acc, '\n') }
-      acc, bytes, from = {}, 0, i + 1
-    end
-  end
-  if #acc > 0 then
-    chunks[#chunks+1] = { start=from, stop=#lines,
-                          txt=table.concat(acc, '\n') }
-  end
-
-  if vim.tbl_isempty(chunks) then return end
-
-  --------------------------------------------------------------------------
-  -- open DB once ----------------------------------------------------------
-  --------------------------------------------------------------------------
   local db = open_db()
 
-  --------------------------------------------------------------------------
-  -- iterate chunks --------------------------------------------------------
-  --------------------------------------------------------------------------
-  for _, ck in ipairs(chunks) do
-    local key = hash(path..ck.start..ck.stop..ck.txt)
-
-    -- skip if already there
-    local row = db:eval('SELECT 1 FROM '..cfg.tableName..' WHERE hash = ?', key)
-    if type(row) == 'table' and row[1] then goto continue end
-
-    -- embed
-    local ok, vec_or_err = pcall(embed, ck.txt)
-    if not ok then
-      vim.notify('[RAG] embed failed: '..vec_or_err, vim.log.levels.ERROR)
-      goto continue
+  local function try_insert(slice, start_ln, stop_ln)
+    local key = hash(path..start_ln..stop_ln..slice)
+    if type(db:eval('SELECT 1 FROM '..cfg.tableName..' WHERE hash=?', key))=='table' then
+      return true  -- already there
     end
-
-    -- insert
-    db:insert(cfg.tableName, {
-      hash   = key,
-      file   = path,
-      symbol = ('%s:%d-%d'):format(path, ck.start, ck.stop),
-      kind   = 0,
-      text   = ck.txt,
-      vec    = f32bin(vec_or_err),
+    local ok, vec = pcall(embed, slice)
+    if not ok then
+      if tostring(vec):match('input is too large') and (stop_ln - start_ln) > 0 then
+        return false  -- tell caller to split further
+      end
+      vim.notify('[RAG] embed failed: '..vec, vim.log.levels.ERROR)
+      return true  -- give up on this slice but continue others
+    end
+    db:insert(cfg.tableName,{
+      hash=key, file=path, symbol=('%s:%d-%d'):format(path,start_ln,stop_ln),
+      kind=0, text=slice, vec=f32bin(vec)
     })
-    ::continue::
+    return true
   end
 
+  -- recursive splitter -----------------------------------------------------
+  local function embed_range(s, e)
+    local slice = table.concat(lines, '\n', s, e)
+    if try_insert(slice, s, e) then return end
+    local mid = math.floor((s+e)/2)
+    if mid <= s then mid = s end
+    if mid >= e then mid = e-1 end
+    embed_range(s, mid)
+    embed_range(mid+1, e)
+  end
+
+  embed_range(1, #lines)
   vim.notify('[RAG] finished embedding '..path)
 end
 
