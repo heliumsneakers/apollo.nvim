@@ -65,16 +65,37 @@ end
 
 -- ── retrieve top-K --------------------------------------------------------
 local function retrieve(question)
-  local qv        = embed(question)
-  local vecs,text = load_vectors()
-  local scored    = {}
-  for i,v in ipairs(vecs) do
-    scored[#scored+1] = { idx=i, score=cosine(qv,v) }
+  local qvec          = embed(question)
+  local vecs, texts   = load_vectors()
+
+  -- Build keyword set from the question (length >3, lowercase)
+  local kw = {}
+  for w in question:lower():gmatch('%w+') do
+    if #w > 3 then kw[w] = true end
   end
-  table.sort(scored, function(a,b) return a.score>b.score end)
+
+  local scored = {}
+  for i, v in ipairs(vecs) do
+    local base   = cosine(qvec, v)          -- semantic score
+    local bonus  = 0                        -- keyword hit boost
+    local t_low  = texts[i]:lower()
+
+    for w in pairs(kw) do
+      if t_low:find(w, 1, true) then
+        bonus = bonus + 0.10               -- +0.10 per hit (tweakable)
+      end
+    end
+
+    if bonus > 0 then                       -- ignore zero-overlap chunks
+      scored[#scored+1] = { idx = i, score = base + bonus }
+    end
+  end
+
+  table.sort(scored, function(a,b) return a.score > b.score end)
+
   local out = {}
-  for i=1,math.min(cfg.topK,#scored) do
-    out[#out+1] = text[scored[i].idx]
+  for i = 1, math.min(cfg.topK, #scored) do
+    out[#out+1] = texts[scored[i].idx]
   end
   return out
 end
