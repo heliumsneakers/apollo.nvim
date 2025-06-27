@@ -1,10 +1,11 @@
--- lua/apollo/ragIndexer.lua  (minimal single-file embed w/ plenary.scandir)
+-- lua/apollo/ragIndexer.lua  — minimal single-file embed
 local sqlite = require('sqlite')
 local scan   = require('plenary.scandir')
+local ftd    = require('plenary.filetype')
 local hash   = vim.fn.sha256
 local M      = {}
 
--- ── configuration ──────────────────────────────────────────────────────────
+-- ── config ────────────────────────────────────────────────────────────────
 local cfg = {
   projectName   = vim.fn.fnamemodify(vim.fn.getcwd(), ':t'),
   embedEndpoint = 'http://127.0.0.1:8080/v1/embeddings',
@@ -12,16 +13,15 @@ local cfg = {
 }
 
 local function db_path()
-  return string.format('%s/%s_rag.sqlite',
-                       vim.fn.stdpath('data'), cfg.projectName)
+  return ('%s/%s_rag.sqlite'):format(vim.fn.stdpath('data'), cfg.projectName)
 end
 
--- ── one-shot embed call ────────────────────────────────────────────────────
+-- ── 1-shot embedding call ─────────────────────────────────────────────────
 local function embed(text)
   local payload = {
-    model           = 'gemma3-embed',
-    input           = { text },
-    pooling         = 'mean',
+    model = 'gemma3-embed',
+    input = { text },
+    pooling = 'mean',
     encoding_format = 'float',
   }
   local ok, res = pcall(vim.fn.systemjson, {
@@ -30,81 +30,81 @@ local function embed(text)
     '-d', vim.fn.json_encode(payload),
   })
   if not ok then error('curl failed: '..res) end
-  local e = res and res.data and res.data[1] and res.data[1].embedding
-  assert(e and #e > 0, 'empty embedding')
-  return e
+  local vec = res and res.data and res.data[1] and res.data[1].embedding
+  assert(vec and #vec > 0, 'empty embedding')
+  return vec
 end
 
-local function f32bin(vec)
-  local out = {}
-  for _,v in ipairs(vec) do out[#out+1] = string.pack('<f', v) end
+local function f32bin(tbl)
+  local out = {}; for _,v in ipairs(tbl) do out[#out+1] = string.pack('<f',v) end
   return table.concat(out)
 end
 
--- ── open (and auto-create) the DB ──────────────────────────────────────────
+-- ── DB helpers ────────────────────────────────────────────────────────────
 local function open_db()
-  local db = sqlite { uri = db_path(), create = true, opts = { keep_open = true } }
-  db:execute(string.format([[
-    CREATE TABLE IF NOT EXISTS %s (
-      hash   TEXT PRIMARY KEY,
-      file   TEXT,
-      symbol TEXT,
-      kind   INT,
-      text   TEXT,
-      vec    BLOB
-    );]], cfg.tableName))
+  local db = sqlite{ uri=db_path(), create=true, opts={ keep_open=true } }
+  db:execute(([[
+    CREATE TABLE IF NOT EXISTS %s(
+      hash TEXT PRIMARY KEY, file TEXT, symbol TEXT, kind INT,
+      text TEXT, vec BLOB);]]):format(cfg.tableName))
   return db
 end
 
--- ── embed a single file ────────────────────────────────────────────────────
+-- ── embed one file ────────────────────────────────────────────────────────
 local function embed_file(path)
   local lines = vim.fn.readfile(path)
   if not lines[1] then
     vim.notify('[RAG] cannot read '..path, vim.log.levels.WARN); return
   end
-  local text = table.concat(lines, '\n')
-  local h    = hash(text)
-
-  local db = open_db()
-  if db:eval('SELECT 1 FROM '..cfg.tableName..' WHERE hash = ?', h)[1] then
-    vim.notify('[RAG] already indexed '..path, vim.log.levels.INFO)
-    return
+  local text, h = table.concat(lines,'\n'), hash(table.concat(lines))
+  local db, row = open_db(), db:eval('SELECT 1 FROM '..cfg.tableName..' WHERE hash=?', h)
+  if type(row)=='table' and row[1] then
+    vim.notify('[RAG] already indexed '..path, vim.log.levels.INFO); return
   end
-
   vim.notify('[RAG] embedding '..path)
-  local vec = f32bin(embed(text))
-  db:insert(cfg.tableName, {
-    hash   = h,
-    file   = path,
-    symbol = path,
-    kind   = 0,
-    text   = text,
-    vec    = vec,
+  db:insert(cfg.tableName,{
+    hash=h, file=path, symbol=path, kind=0, text=text, vec=f32bin(embed(text))
   })
   vim.notify('[RAG] inserted '..path)
 end
 
--- ── user-facing command ────────────────────────────────────────────────────
-vim.api.nvim_create_user_command('ApolloRagEmbed', function()
-  -------------------------------------------------------------
-  -- Gather files with plenary.scandir (no external `rg` need) -
-  -------------------------------------------------------------
-  local files = scan.scan_dir(vim.fn.getcwd(), {
-    hidden            = true,  -- include dot-files
-    add_dirs          = false,
-    depth             = 8,     -- stop after 8 directory levels
-    respect_gitignore = true,  -- skip paths ignored by .gitignore
-  })
+-- ── collect active-LSP filetypes ──────────────────────────────────────────
+local function active_ft_set()
+  local set = {}
+  for _,c in pairs(vim.lsp.get_active_clients()) do
+    for _,ft in ipairs(c.config.filetypes or {}) do set[ft]=true end
+  end
+  return set
+end
 
-  table.sort(files)
-  if vim.tbl_isempty(files) then
-    vim.notify('[RAG] no files found in workspace', vim.log.levels.WARN)
-    return
+-- ── user command :ApolloRagEmbed ──────────────────────────────────────────
+vim.api.nvim_create_user_command('ApolloRagEmbed', function()
+  local want_ft = active_ft_set()
+  if vim.tbl_isempty(want_ft) then
+    vim.notify('[RAG] no LSP clients attached', vim.log.levels.WARN); return
   end
 
-  vim.ui.select(files, { prompt = 'Pick a file to embed' }, function(choice)
+  -- scan workspace
+  local paths = scan.scan_dir(vim.fn.getcwd(), {
+    hidden=true, add_dirs=false, depth=8, respect_gitignore=true,
+  })
+
+  -- keep only files whose detected filetype matches active LSPs
+  local files = {}
+  for _,p in ipairs(paths) do
+    local ft = ftd.detect_from_extension(p) or ftd.detect(p, {})
+    if ft and want_ft[ft] then files[#files+1]=p end
+  end
+
+  if vim.tbl_isempty(files) then
+    vim.notify('[RAG] no source files match active LSP types', vim.log.levels.INFO)
+    return
+  end
+  table.sort(files)
+
+  vim.ui.select(files,{prompt='Pick a file to embed'}, function(choice)
     if choice then embed_file(choice) end
   end)
-end, {})
+end,{})
 
-return M   -- no setup() needed for this minimal example
+return M
