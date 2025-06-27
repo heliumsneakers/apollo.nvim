@@ -27,10 +27,10 @@ end
 -- one-shot embed call -------------------------------------------------------
 local function embed(text)
   local payload = {
-    model           = 'gemma3-embed',
-    input           = { text },
-    pooling         = 'mean',
-    encoding_format = 'float',
+    model   = 'gemma3-embed',
+    input   = { text },
+    pooling = 'mean',           -- required for llama-server
+    -- encoding_format = 'float', -- remove: let server decide
   }
 
   local res = system_json({
@@ -39,8 +39,19 @@ local function embed(text)
     '-d', vim.fn.json_encode(payload),
   })
 
-  local vec = res and res.data and res.data[1] and res.data[1].embedding
-  assert(vec and #vec > 0, 'empty embedding')
+  -- If server sent an error block, surface it
+  if res.error then
+    error(('embedding error %s: %s')
+          :format(res.error.code or '', res.error.message or 'unknown'))
+  end
+
+  local vec = res
+           and res.data and res.data[1]
+           and res.data[1].embedding
+
+  assert(vec and #vec > 0,
+         ('empty embedding (response keys: %s)')
+         :format(table.concat(vim.tbl_keys(res), ', ')))
   return vec
 end
 
