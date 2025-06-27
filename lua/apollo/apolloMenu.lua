@@ -11,7 +11,9 @@ Menu.items = {}
 --------------------------------------------------
 local COMMANDS = {
   { cmd = "ApolloChat", label = "Apollo Chat" },
-  { cmd = "ApolloImpl", label = "Apollo Implement" },
+  { cmd = "ApolloAsk", label = "Apollo RAG Impl" },
+  { cmd = "ApolloRagEmbed", label = "Embed src file" },
+  { cmd = "ApolloRagEmbedDirs", label = "Embed srcs from folder" },
   { cmd = "ApolloQuit", label = "Reset Chat Context" },
 }
 
