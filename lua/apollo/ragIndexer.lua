@@ -55,15 +55,24 @@ end
 
 -- ── DB init ────────────────────────────────────────────────────────────────
 local function open_db()
-  local db = sqlite.new(db_path())
-  db:exec(string.format([[CREATE TABLE IF NOT EXISTS %s (
+  -- sqlite.lua constructor: call the module like a function
+  -- (creates file if it doesn't exist)
+  local db = require('sqlite') {
+    uri    = db_path(),
+    create = true,
+  }
+
+  db:exec(string.format([[
+    CREATE TABLE IF NOT EXISTS %s (
       hash   TEXT PRIMARY KEY,
       file   TEXT,
       symbol TEXT,
       kind   INT,
       text   TEXT,
       vec    BLOB
-  );]], cfg.tableName))
+    );
+  ]], cfg.tableName))
+
   db:exec('PRAGMA journal_mode=WAL;')
   return db
 end
