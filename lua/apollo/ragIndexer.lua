@@ -55,13 +55,16 @@ end
 
 -- ── DB init ────────────────────────────────────────────────────────────────
 local function open_db()
-  -- sqlite.lua constructor: call the module like a function
-  -- (creates file if it doesn't exist)
-  local db = require('sqlite') {
-    uri    = db_path(),
+  local sqlite = require('sqlite')
+
+  -- create handle
+  local db = sqlite {
+    uri   = db_path(),
     create = true,
+    opts  = { keep_open = true },  -- <- keeps connection open
   }
 
+  -- connection guaranteed open here
   db:execute(string.format([[
     CREATE TABLE IF NOT EXISTS %s (
       hash   TEXT PRIMARY KEY,
@@ -74,7 +77,7 @@ local function open_db()
   ]], cfg.tableName))
 
   db:execute('PRAGMA journal_mode=WAL;')
-  return db
+  return db           -- still open for inserts
 end
 
 -- ── symbol harvesting ──────────────────────────────────────────────────────
