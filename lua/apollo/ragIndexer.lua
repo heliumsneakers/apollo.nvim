@@ -170,13 +170,18 @@ end,{})
 do
   local picker = { win=nil, buf=nil, dirs={}, mark={} }
 
-  -- redraw buffer lines with ✓ /   prefixes
   local function refresh()
     local lines = {}
     for _,d in ipairs(picker.dirs) do
       lines[#lines+1] = (picker.mark[d] and '✓ ' or '  ') .. d
     end
+
+    lines[#lines+1] = '-- Press <Enter> to start embedding --'
+
+    -- temporarily allow writes
+    vim.api.nvim_buf_set_option(picker.buf, 'modifiable', true)
     vim.api.nvim_buf_set_lines(picker.buf, 0, -1, false, lines)
+    vim.api.nvim_buf_set_option(picker.buf, 'modifiable', false)
   end
 
   local function toggle()
