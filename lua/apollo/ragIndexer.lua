@@ -56,14 +56,29 @@ local function embed_file(path)
   if not lines[1] then
     vim.notify('[RAG] cannot read '..path, vim.log.levels.WARN); return
   end
-  local text, h = table.concat(lines,'\n'), hash(table.concat(lines))
-  local db, row = open_db(), db:eval('SELECT 1 FROM '..cfg.tableName..' WHERE hash=?', h)
-  if type(row)=='table' and row[1] then
-    vim.notify('[RAG] already indexed '..path, vim.log.levels.INFO); return
+  local text = table.concat(lines, '\n')
+  local h    = hash(text)
+
+  ----------------------------------------------------------------
+  -- FIX: create DB first, then query it -------------------------
+  ----------------------------------------------------------------
+  local db   = open_db()
+  local row  = db:eval('SELECT 1 FROM '..cfg.tableName..' WHERE hash = ?', h)
+  if type(row) == 'table' and row[1] then
+    vim.notify('[RAG] already indexed '..path, vim.log.levels.INFO)
+    return
   end
+  ----------------------------------------------------------------
+
   vim.notify('[RAG] embedding '..path)
-  db:insert(cfg.tableName,{
-    hash=h, file=path, symbol=path, kind=0, text=text, vec=f32bin(embed(text))
+  local vec = f32bin(embed(text))
+  db:insert(cfg.tableName, {
+    hash   = h,
+    file   = path,
+    symbol = path,
+    kind   = 0,
+    text   = text,
+    vec    = vec,
   })
   vim.notify('[RAG] inserted '..path)
 end
