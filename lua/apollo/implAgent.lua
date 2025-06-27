@@ -45,11 +45,18 @@ end
 local VEC, TXT
 local function load_vectors()
   if VEC then return VEC, TXT end
-  local rows = sqlite{uri=db_path(),create=false}:eval(
-                 'SELECT text, vec FROM '..cfg.dbName)
+
+  -- open connection immediately and keep it open
+  local db = require('sqlite'){
+    uri   = db_path(),
+    create = false,                 -- DB already exists
+    opts  = { keep_open = true },   -- <<< important
+  }
+
+  local rows = db:eval('SELECT text, vec FROM '..cfg.dbName) or {}
   VEC, TXT = {}, {}
   for _,r in ipairs(rows) do
-    local v = fn.json_decode(r.vec)  -- vec is stored as JSON
+    local v = fn.json_decode(r.vec)  -- we stored JSON
     VEC[#VEC+1] = v
     TXT[#TXT+1] = r.text
   end
