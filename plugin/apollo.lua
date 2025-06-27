@@ -21,7 +21,6 @@ end
 load('apollo')               -- main chat UI (:ApolloChat / :ApolloQuit)
 load('apollo.apolloMenu')    -- floating command picker
 load('apollo.implAgent')     -- implementation wizard
-load('apollo.howto-agent')   -- “How-to” outline helper  (add if not already)
 
 -- RAG indexer ---------------------------------------------------------------
 load('apollo.ragIndexer', {
