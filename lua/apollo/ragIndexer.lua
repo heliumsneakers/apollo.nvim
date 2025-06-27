@@ -16,20 +16,29 @@ local function db_path()
   return ('%s/%s_rag.sqlite'):format(vim.fn.stdpath('data'), cfg.projectName)
 end
 
--- ── 1-shot embedding call ─────────────────────────────────────────────────
+local function system_json(cmd_tbl)
+  local raw = vim.fn.system(cmd_tbl)
+  if vim.v.shell_error ~= 0 then
+    error('curl failed: '..raw)
+  end
+  return vim.fn.json_decode(raw)
+end
+
+-- one-shot embed call -------------------------------------------------------
 local function embed(text)
   local payload = {
-    model = 'gemma3-embed',
-    input = { text },
-    pooling = 'mean',
+    model           = 'gemma3-embed',
+    input           = { text },
+    pooling         = 'mean',
     encoding_format = 'float',
   }
-  local ok, res = pcall(vim.fn.systemjson, {
+
+  local res = system_json({
     'curl','-s','-X','POST', cfg.embedEndpoint,
     '-H','Content-Type: application/json',
     '-d', vim.fn.json_encode(payload),
   })
-  if not ok then error('curl failed: '..res) end
+
   local vec = res and res.data and res.data[1] and res.data[1].embedding
   assert(vec and #vec > 0, 'empty embedding')
   return vec
