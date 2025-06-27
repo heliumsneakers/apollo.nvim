@@ -7,7 +7,7 @@
 --   • Ask each attached LSP for `textDocument/documentSymbol`.
 --   • For every symbol of interesting kinds (functions, methods, structs…):
 --       - Slice exact source lines (range).
---       - Embed that text with Gemma-3 embeddings running at localhost.
+--       - Embed that text with Gemma‑3 embeddings running at localhost.
 --       - Store {hash, file, symbol, kind, text, vec} if not already cached.
 --   • DB filename is `<projectName>_rag.sqlite` inside stdpath('data').
 --
@@ -22,7 +22,7 @@ local M      = {}
 -- ── configuration ──────────────────────────────────────────────────────────
 local cfg = {
   projectName   = vim.fn.fnamemodify(vim.fn.getcwd(), ':t'),
-  embeddingDim  = 256,                   -- Gemma-3 embedding dim
+  embeddingDim  = 256,                   -- Gemma‑3 embedding dim
   embedEndpoint = 'http://127.0.0.1:8080/v1/embeddings',
   tableName     = 'lsp_chunks',
 }
