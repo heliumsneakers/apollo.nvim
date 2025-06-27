@@ -1,8 +1,10 @@
--- lua/apollo/ragIndexer.lua  (minimal single-file embed)
+-- lua/apollo/ragIndexer.lua  (minimal single-file embed w/ plenary.scandir)
 local sqlite = require('sqlite')
+local scan   = require('plenary.scandir')
 local hash   = vim.fn.sha256
 local M      = {}
 
+-- ── configuration ──────────────────────────────────────────────────────────
 local cfg = {
   projectName   = vim.fn.fnamemodify(vim.fn.getcwd(), ':t'),
   embedEndpoint = 'http://127.0.0.1:8080/v1/embeddings',
@@ -10,10 +12,11 @@ local cfg = {
 }
 
 local function db_path()
-  return string.format('%s/%s_rag.sqlite', vim.fn.stdpath('data'), cfg.projectName)
+  return string.format('%s/%s_rag.sqlite',
+                       vim.fn.stdpath('data'), cfg.projectName)
 end
 
--- one-shot embed call -------------------------------------------------------
+-- ── one-shot embed call ────────────────────────────────────────────────────
 local function embed(text)
   local payload = {
     model           = 'gemma3-embed',
@@ -28,7 +31,7 @@ local function embed(text)
   })
   if not ok then error('curl failed: '..res) end
   local e = res and res.data and res.data[1] and res.data[1].embedding
-  assert(e and #e>0, 'empty embedding')
+  assert(e and #e > 0, 'empty embedding')
   return e
 end
 
@@ -38,7 +41,7 @@ local function f32bin(vec)
   return table.concat(out)
 end
 
--- open (and auto-create) the DB --------------------------------------------
+-- ── open (and auto-create) the DB ──────────────────────────────────────────
 local function open_db()
   local db = sqlite { uri = db_path(), create = true, opts = { keep_open = true } }
   db:execute(string.format([[
@@ -53,7 +56,7 @@ local function open_db()
   return db
 end
 
--- embed one file ------------------------------------------------------------
+-- ── embed a single file ────────────────────────────────────────────────────
 local function embed_file(path)
   local lines = vim.fn.readfile(path)
   if not lines[1] then
@@ -81,14 +84,27 @@ local function embed_file(path)
   vim.notify('[RAG] inserted '..path)
 end
 
--- user-facing command -------------------------------------------------------
+-- ── user-facing command ────────────────────────────────────────────────────
 vim.api.nvim_create_user_command('ApolloRagEmbed', function()
-  -- collect file list (up to 500 for convenience)
-  local files = vim.fn.systemlist('rg --files')
+  -------------------------------------------------------------
+  -- Gather files with plenary.scandir (no external `rg` need) -
+  -------------------------------------------------------------
+  local files = scan.scan_dir(vim.fn.getcwd(), {
+    hidden            = true,  -- include dot-files
+    add_dirs          = false,
+    depth             = 8,     -- stop after 8 directory levels
+    respect_gitignore = true,  -- skip paths ignored by .gitignore
+  })
+
   table.sort(files)
+  if vim.tbl_isempty(files) then
+    vim.notify('[RAG] no files found in workspace', vim.log.levels.WARN)
+    return
+  end
+
   vim.ui.select(files, { prompt = 'Pick a file to embed' }, function(choice)
     if choice then embed_file(choice) end
   end)
 end, {})
 
-return M            -- (no setup needed for this minimal example)
+return M   -- no setup() needed for this minimal example
