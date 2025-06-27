@@ -40,11 +40,33 @@ end
 
 -- ── embedding helpers ──────────────────────────────────────────────────────
 local function embed(text)
-  local payload = { model = 'gemma3-embed', input = { text } }
-  local j = vim.fn.systemjson({ 'curl','-s','-X','POST', cfg.embedEndpoint,
-                               '-H','Content-Type: application/json',
-                               '-d', vim.fn.json_encode(payload) })
-  return j.data[1].embedding  -- table<float>
+  -- build the payload exactly like test.sh
+  local payload = {
+    model            = 'gemma3-embed',  -- any id works for llama-server
+    input            = { text },
+    pooling          = 'mean',          -- REQUIRED or server throws 400
+    encoding_format  = 'float',         -- returns plain float32 numbers
+  }
+
+  -- make the request
+  local ok, res = pcall(vim.fn.systemjson, {
+    'curl', '-s', '-X', 'POST', cfg.embedEndpoint,
+    '-H',   'Content-Type: application/json',
+    '-d',   vim.fn.json_encode(payload),
+  })
+
+  if not ok then
+    error('curl failed: '..res)
+  end
+
+  -- basic sanity check
+  if not res or not res.data or not res.data[1]
+     or not res.data[1].embedding or #res.data[1].embedding == 0
+  then
+    error('embedding response malformed or empty')
+  end
+
+  return res.data[1].embedding   -- table<float>
 end
 
 local function f32bin(vec)
