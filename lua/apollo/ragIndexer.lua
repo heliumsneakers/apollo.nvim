@@ -98,24 +98,67 @@ end
 ---@param buf    integer
 ---@param file   string
 local function index_symbols(client, buf, file, db)
-  client.request('textDocument/documentSymbol',{ textDocument={uri=uri_of(buf)} },
+  -- quick helper so logging never blocks UI
+  local function log(msg)
+    vim.schedule(function()
+      vim.notify('[RAG] '..msg, vim.log.levels.DEBUG)   -- :set loglevel=debug to see
+    end)
+  end
+
+  client.request(
+    'textDocument/documentSymbol',
+    { textDocument = { uri = uri_of(buf) } },
     function(err, res)
-      if err or not res then return end
+      if err then
+        log(('LSP error on %s: %s'):format(file, err.message or err))
+        return
+      end
+      if not res then
+        log(('No symbols returned for %s'):format(file))
+        return
+      end
+
+      local inserted = 0
+
       local function walk(sym)
         if wanted[sym.kind] then
-          local code = slice(buf, sym.range)
-          local chunk = ('/// %s:%d-%d\n%s'):format(file, sym.range.start.line+1, sym.range['end'].line+1, code)
+          local code  = slice(buf, sym.range)
+          local chunk = ('/// %s:%d-%d\n%s')
+                         :format(file, sym.range.start.line + 1,
+                                 sym.range['end'].line + 1, code)
           local h = hash(chunk)
-          if not db:select('SELECT 1 FROM '..cfg.tableName..' WHERE hash=?',{h})[1] then
-            local vec = f32bin(embed(chunk))
-            db:insert(cfg.tableName,{hash=h,file=file,symbol=sym.name,kind=sym.kind,text=chunk,vec=vec})
+
+          if not db:select('SELECT 1 FROM '..cfg.tableName..' WHERE hash=?', { h })[1] then
+            log(('embedding %s (%s)'):format(sym.name, file))
+            local ok, vec = pcall(function() return f32bin(embed(chunk)) end)
+            if ok then
+              db:insert(cfg.tableName, {
+                hash   = h,
+                file   = file,
+                symbol = sym.name,
+                kind   = sym.kind,
+                text   = chunk,
+                vec    = vec,
+              })
+              inserted = inserted + 1
+            else
+              log(('embed failed: %s'):format(vec))  -- ‘vec’ holds the error message here
+            end
           end
         end
-        if sym.children then for _,c in ipairs(sym.children) do walk(c) end end
+        if sym.children then
+          for _, c in ipairs(sym.children) do walk(c) end
+        end
       end
-      for _,s in ipairs(res) do walk(s) end
+
+      for _, s in ipairs(res) do walk(s) end
+      if inserted > 0 then
+        log(('↑ added %d symbol%s from %s')
+            :format(inserted, inserted == 1 and '' or 's', file))
+      end
     end,
-    buf)
+    buf
+  )
 end
 
 -- ── main reindex routine ───────────────────────────────────────────────────
