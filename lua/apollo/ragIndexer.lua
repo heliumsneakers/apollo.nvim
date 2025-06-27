@@ -167,4 +167,88 @@ vim.api.nvim_create_user_command('ApolloRagEmbed', function()
   end)
 end,{})
 
+-- ── UI helper (simple multi-select) ----------------------------------------
+local function pick_dirs(candidates, callback)
+  local marked, order = {}, {}
+  local function build_display()
+    local out = {}
+    for i,p in ipairs(candidates) do
+      out[#out+1] = (marked[p] and '✓ ' or '  ') .. p
+    end
+    out[#out+1] = '-- Done --'
+    return out
+  end
+
+  local function redraw()
+    vim.ui.select(build_display(), { prompt = 'Toggle folders (CR), Tab = Done' },
+      function(choice, idx)
+        if not choice then return end
+        if choice == '-- Done --' or idx == #build_display() then
+          local sel = {}
+          for _,p in ipairs(order) do if marked[p] then sel[#sel+1]=p end end
+          callback(sel)
+          return
+        end
+        local real = candidates[idx]
+        marked[real] = not marked[real]
+        if not marked[real] then
+          -- remove from order
+          for k,v in ipairs(order) do if v==real then table.remove(order,k);break end end
+        else order[#order+1]=real end
+        redraw()  -- recurse to re-open
+      end)
+  end
+  redraw()
+end
+
+-- ── command :ApolloRagEmbedDirs -------------------------------------------
+vim.api.nvim_create_user_command('ApolloRagEmbedDirs', function()
+  --------------------------------------------------------------------------
+  -- 1. collect candidate dirs (depth ≤ 3) ---------------------------------
+  --------------------------------------------------------------------------
+  local raw_dirs = scan.scan_dir(vim.fn.getcwd(), {
+    only_dirs = true, depth = 3, respect_gitignore = true, hidden = false,
+  })
+  table.sort(raw_dirs)
+
+  if vim.tbl_isempty(raw_dirs) then
+    vim.notify('[RAG] no sub-directories found', vim.log.levels.WARN)
+    return
+  end
+
+  --------------------------------------------------------------------------
+  -- 2. let user pick which dirs to index ----------------------------------
+  --------------------------------------------------------------------------
+  pick_dirs(raw_dirs, function(selected)
+    if vim.tbl_isempty(selected) then
+      vim.notify('[RAG] nothing selected', vim.log.levels.INFO); return
+    end
+
+    ------------------------------------------------------------------------
+    -- 3. derive desired filetypes from active LSPs ------------------------
+    ------------------------------------------------------------------------
+    local want_ft = active_ft_set()
+    if vim.tbl_isempty(want_ft) then
+      vim.notify('[RAG] no LSP clients attached', vim.log.levels.WARN); return
+    end
+
+    ------------------------------------------------------------------------
+    -- 4. for each dir, recursively embed matching files ------------------
+    ------------------------------------------------------------------------
+    for _,dir in ipairs(selected) do
+      vim.notify('[RAG] indexing '..dir)
+      local paths = scan.scan_dir(dir, {
+        hidden=true, add_dirs=false, depth=8, respect_gitignore=true,
+      })
+      for _,p in ipairs(paths) do
+        local ft = ftd.detect_from_extension(p) or ftd.detect(p,{})
+        if ft and want_ft[ft] then
+          embed_file(p)             -- adaptive chunk embedder
+        end
+      end
+    end
+    vim.notify('[RAG] bulk indexing complete')
+  end)
+end, {})
+
 return M
