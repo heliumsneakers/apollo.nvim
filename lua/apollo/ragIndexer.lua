@@ -62,7 +62,7 @@ local function open_db()
     create = true,
   }
 
-  db:exec(string.format([[
+  db:execute(string.format([[
     CREATE TABLE IF NOT EXISTS %s (
       hash   TEXT PRIMARY KEY,
       file   TEXT,
@@ -73,7 +73,7 @@ local function open_db()
     );
   ]], cfg.tableName))
 
-  db:exec('PRAGMA journal_mode=WAL;')
+  db:execute('PRAGMA journal_mode=WAL;')
   return db
 end
 
