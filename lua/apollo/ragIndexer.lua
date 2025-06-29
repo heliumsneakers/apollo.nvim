@@ -65,32 +65,41 @@ local function open_db()
   return DB
 end
 
--- ── Tree-sitter function finder ------------------------------------------
+local ts = vim.treesitter
+
 local function get_functions(bufnr, lang)
-  local parser = vim.treesitter.get_parser(bufnr, lang)
+  local parser = ts.get_parser(bufnr, lang)
   if not parser then return {} end
+
   local tree = parser:parse()[1]
   local root = tree:root()
 
-  -- pick the node types that exist in this language
+  -- pick only nodes we know exist
   local node_types = { "function_definition" }
   if lang == "javascript" or lang == "typescript" then
     table.insert(node_types, "method_definition")
   end
 
-  -- build a little query that matches any of them
-  local pat = {}
+  -- build an “or” query
+  local patterns = {}
   for _, n in ipairs(node_types) do
-    -- wrap each in its own capture
-    pat[#pat+1] = string.format("(%s) @def", n)
+    patterns[#patterns+1] = "(" .. n .. ") @def"
   end
-  local query = vim.treesitter.query.parse(lang, table.concat(pat, "\n"))
+  local query = ts.query.parse(lang, table.concat(patterns, "\n"))
 
   local defs = {}
-  for _, match in query:iter_matches(root, bufnr, 0, -1) do
-    local node = match[1]
-    local sr, _, er, _ = node:range()
-    table.insert(defs, { start_ln = sr+1, end_ln = er+1 })
+  for _, match, _ in query:iter_matches(root, bufnr, 0, -1) do
+    for id, node in pairs(match) do
+      local name = query.captures[id]    -- capture name, e.g. "def"
+      if name == "def" and node then
+        -- use ts_utils to get range
+        local sr, sc, er, ec = node:range()
+        defs[#defs+1] = {
+          start_ln = sr + 1,
+          end_ln   = er + 1,
+        }
+      end
+    end
   end
 
   return defs
