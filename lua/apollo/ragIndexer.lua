@@ -2,10 +2,10 @@
 local sqlite      = require('sqlite')
 local scan        = require('plenary.scandir')
 local ftd         = require('plenary.filetype')
-local ts_utils    = require('nvim-treesitter.ts_utils')
 local api, fn     = vim.api, vim.fn
 local json_encode = vim.fn.json_encode
 local hash        = fn.sha256
+local ts           = vim.treesitter
 
 -- ── config ────────────────────────────────────────────────────────────────
 local cfg = {
@@ -41,6 +41,13 @@ local function embed(text)
   return res.data[1].embedding
 end
 
+-- ── safe wrapper: returns vec or nil+err ──────────────────────────────────
+local function try_embed(text)
+  local ok, vec_or_err = pcall(embed, text)
+  if ok then return vec_or_err end
+  return nil, tostring(vec_or_err)
+end
+
 -- ── open DB & schema ──────────────────────────────────────────────────────
 local DB
 local function open_db()
@@ -65,10 +72,7 @@ local function open_db()
   return DB
 end
 
--- ── Tree-sitter function finder ────────────────────────────────────────
-local ts   = vim.treesitter
-local util = require('nvim-treesitter.ts_utils')
-
+-- ── Tree-sitter function finder ──────────────────────────────────────────
 local function get_functions(bufnr, lang)
   local parser = ts.get_parser(bufnr, lang)
   if not parser then return {} end
@@ -76,13 +80,11 @@ local function get_functions(bufnr, lang)
   local tree = parser:parse()[1]
   local root = tree:root()
 
-  -- only these two node types
   local node_types = { "function_definition" }
   if lang == "javascript" or lang == "typescript" then
     table.insert(node_types, "method_definition")
   end
 
-  -- build a single query with multiple captures
   local pats = {}
   for _, n in ipairs(node_types) do
     pats[#pats+1] = string.format("(%s) @def", n)
@@ -100,10 +102,10 @@ local function get_functions(bufnr, lang)
   return defs
 end
 
-
 -- ── insert one snippet into DB --------------------------------------------
 local function insert_snippet(db, meta, body)
-  local vec    = embed(body)
+  local vec, err = try_embed(body)
+  if not vec then error(err) end
   local tok    = select(2, body:gsub('%S+', ''))
   local id     = hash(meta.file..meta.start_ln..meta.end_ln..body)
   db:insert(cfg.tableName, {
@@ -120,12 +122,14 @@ end
 
 -- ── recursive fallback split if too large -------------------------------
 local function split_and_ingest(db, meta, lines)
-  if #lines <= cfg.maxLines then
-    insert_snippet(db, meta, table.concat(lines, '\n'))
-  else
-    local mid = math.floor(#lines/2)
+  local joined = table.concat(lines, '\n')
+
+  local vec, err = try_embed(joined)
+  if not vec and err:match('too large') and #lines > 8 then
+    local mid = math.floor(#lines / 2)
     local a   = vim.list_slice(lines, 1, mid)
     local b   = vim.list_slice(lines, mid+1, #lines)
+
     local meta_a = vim.tbl_extend('force', meta, {
       end_ln = meta.start_ln + mid - 1,
       parent = meta.id,
@@ -134,9 +138,13 @@ local function split_and_ingest(db, meta, lines)
       start_ln = meta.start_ln + mid,
       parent   = meta.id,
     })
+
     split_and_ingest(db, meta_a, a)
     split_and_ingest(db, meta_b, b)
+    return
   end
+
+  insert_snippet(db, meta, joined)
 end
 
 -- ── main file embedder ----------------------------------------------------
@@ -147,13 +155,11 @@ local function embed_file(path)
     return
   end
 
-  local bufnr = vim.fn.bufadd(path)
-  vim.fn.bufload(bufnr)
+  local bufnr = fn.bufnr(path, true)
+  fn.bufload(bufnr)
 
-  local lang  = ftd.detect_from_extension(path)
-  or ftd.detect(path, {}) or 'txt'
+  local lang  = ftd.detect_from_extension(path) or ftd.detect(path,{}) or 'txt'
   local db    = open_db()
-   -- find all top-level functions
   local funcs = get_functions(bufnr, lang)
   if vim.tbl_isempty(funcs) then
     funcs = {{ start_ln = 1, end_ln = #lines }}
@@ -173,7 +179,7 @@ local function embed_file(path)
   vim.notify(('[RAG] embedded %d snippet(s) from %s'):format(#funcs, path))
 end
 
--- ── LSP-aware filetype filter --------------------------------------------
+-- ── LSP-aware filetype filter & UI commands -----------------------------
 local function active_ft()
   local s = {}
   for _, c in pairs(vim.lsp.get_active_clients()) do
@@ -182,7 +188,6 @@ local function active_ft()
   return s
 end
 
--- ── single-file picker ----------------------------------------------------
 local function embed_one_prompt()
   local want = active_ft()
   if vim.tbl_isempty(want) then
@@ -199,7 +204,7 @@ local function embed_one_prompt()
   table.sort(all)
 
   local files = vim.tbl_filter(function(p)
-    local ft = ftd.detect_from_extension(p) or ftd.detect(p, {})
+    local ft = ftd.detect_from_extension(p) or ftd.detect(p,{})
     return want[ft]
   end, all)
 
@@ -209,48 +214,33 @@ local function embed_one_prompt()
 end
 api.nvim_create_user_command('ApolloRagEmbed', embed_one_prompt, {})
 
--- ── directory-picker UI ---------------------------------------------------
 local picker = { win=nil, buf=nil, dirs={}, mark={} }
-
 local function refresh()
   local lines = {}
   for _, d in ipairs(picker.dirs) do
     lines[#lines+1] = (picker.mark[d] and '✓ ' or '  ') .. d
   end
   lines[#lines+1] = '-- <Enter> to start embedding --'
-  api.nvim_buf_set_option(picker.buf, 'modifiable', true)
-  api.nvim_buf_set_lines(picker.buf, 0, -1, false, lines)
-  api.nvim_buf_set_option(picker.buf, 'modifiable', false)
+  api.nvim_buf_set_option(picker.buf,'modifiable',true)
+  api.nvim_buf_set_lines(picker.buf,0,-1,false,lines)
+  api.nvim_buf_set_option(picker.buf,'modifiable',false)
 end
-
 local function toggle()
-  local row = fn.line('.')
-  local d   = picker.dirs[row]
-  if d then picker.mark[d] = not picker.mark[d]; refresh() end
+  local row = fn.line('.'); local d = picker.dirs[row]
+  if d then picker.mark[d]=not picker.mark[d]; refresh() end
 end
-
 local function close()
-  if picker.win and api.nvim_win_is_valid(picker.win) then
-    api.nvim_win_close(picker.win, true)
-  end
-  if picker.buf and api.nvim_buf_is_valid(picker.buf) then
-    api.nvim_buf_delete(picker.buf, { force = true })
-  end
-  picker.win, picker.buf = nil, nil
+  if picker.win and api.nvim_win_is_valid(picker.win) then api.nvim_win_close(picker.win,true) end
+  if picker.buf and api.nvim_buf_is_valid(picker.buf) then api.nvim_buf_delete(picker.buf,{force=true}) end
+  picker.win,picker.buf = nil,nil
 end
-
 local function commit()
   close()
   local want = active_ft()
   for dir, sel in pairs(picker.mark) do
     if sel then
       vim.notify('[RAG] indexing '..dir)
-      for _, p in ipairs(scan.scan_dir(dir, {
-        hidden            = true,
-        add_dirs          = false,
-        depth             = 8,
-        respect_gitignore = true,
-      })) do
+      for _, p in ipairs(scan.scan_dir(dir,{hidden=true,add_dirs=false,depth=8,respect_gitignore=true})) do
         local ft = ftd.detect_from_extension(p) or ftd.detect(p,{})
         if want[ft] then embed_file(p) end
       end
@@ -258,39 +248,15 @@ local function commit()
   end
   vim.notify('[RAG] bulk indexing complete')
 end
-
 api.nvim_create_user_command('ApolloRagEmbedDirs', function()
-  picker.dirs = scan.scan_dir(fn.getcwd(), {
-    only_dirs         = true,
-    depth             = 3,
-    respect_gitignore = true,
-  })
-  table.sort(picker.dirs)
-  if vim.tbl_isempty(picker.dirs) then
-    vim.notify('[RAG] no sub-directories found', vim.log.levels.WARN)
-    return
-  end
-
-  picker.mark = {}
-  picker.buf  = api.nvim_create_buf(false, true)
-  refresh()
-
-  local h = math.min(#picker.dirs, math.floor(vim.o.lines * 0.6))
-  local w = math.floor(vim.o.columns * 0.45)
-  picker.win = api.nvim_open_win(picker.buf, true, {
-    relative = 'editor',
-    row      = (vim.o.lines - h) / 2,
-    col      = (vim.o.columns - w) / 2,
-    width    = w,
-    height   = h,
-    style    = 'minimal',
-    border   = 'rounded',
-  })
-
-  api.nvim_buf_set_option(picker.buf, 'filetype', 'rag_picker')
-  vim.keymap.set('n', 'e', toggle,  { buffer = picker.buf })
-  vim.keymap.set('n', '<CR>', commit, { buffer = picker.buf })
-  vim.keymap.set('n', 'q', close,   { buffer = picker.buf })
+  picker.dirs = scan.scan_dir(fn.getcwd(),{only_dirs=true,depth=3,respect_gitignore=true})
+  table.sort(picker.dirs); picker.mark={}
+  picker.buf=api.nvim_create_buf(false,true); refresh()
+  local h,w = math.min(#picker.dirs,math.floor(vim.o.lines*0.6)), math.floor(vim.o.columns*0.45)
+  picker.win=api.nvim_open_win(picker.buf,true,{
+    relative='editor',row=(vim.o.lines-h)/2,col=(vim.o.columns-w)/2,
+    width=w,height=h,style='minimal',border='rounded'})
+  vim.keymap.set('n','e',toggle,{buffer=picker.buf}); vim.keymap.set('n','<CR>',commit,{buffer=picker.buf}); vim.keymap.set('n','q',close,{buffer=picker.buf})
 end, {})
 
 return M
