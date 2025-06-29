@@ -1,14 +1,13 @@
--- lua/apollo/impl-agent.lua – RAG QA assistant (fts + vss schema aware)
+-- lua/apollo/impl-agent.lua  –  RAG Q-and-A assistant
 local api, fn = vim.api, vim.fn
-local sqlite  = require 'sqlite'
+local sqlite  = require('sqlite')
 
--- ── config ────────────────────────────────────────────────────────────────
+-- ── config ---------------------------------------------------------------
 local cfg = {
   projectName   = fn.fnamemodify(fn.getcwd(), ':t'),
-  chatEndpoint  = 'http://127.0.0.1:8080/v1/chat/completions',
   embedEndpoint = 'http://127.0.0.1:8080/v1/embeddings',
-  tableBase     = 'chunks',        -- chunks_raw / chunks_fts
-  dim           = 256,             -- must match indexer
+  chatEndpoint  = 'http://127.0.0.1:8080/v1/chat/completions',
+  dbName        = 'lsp_chunks',
   topK          = 6,
 }
 
@@ -16,17 +15,18 @@ local function db_path()
   return ('%s/%s_rag.sqlite'):format(fn.stdpath('data'), cfg.projectName)
 end
 
--- ── emb helper (only for query vector) ────────────────────────────────────
+-- ── http helpers ---------------------------------------------------------
 local function system_json(cmd)
-  local out = fn.system(cmd)
-  if vim.v.shell_error ~= 0 then error(out) end
-  return fn.json_decode(out)
+  local raw = fn.system(cmd)
+  if vim.v.shell_error ~= 0 then error(raw) end
+  return fn.json_decode(raw)
 end
-local function embed(txt)
+
+local function embed(text)
   local res = system_json{
     'curl','-s','-X','POST',cfg.embedEndpoint,
     '-H','Content-Type: application/json',
-    '-d', fn.json_encode{ model='gemma3-embed',input={txt},pooling='mean'}
+    '-d', fn.json_encode{ model='gemma3-embed',input={text},pooling='mean' }
   }
   if res.error then error(res.error.message) end
   return res.data[1].embedding
@@ -34,170 +34,226 @@ end
 
 -- ── cosine ---------------------------------------------------------------
 local function cosine(a,b)
-  local dot,na,nb=0,0,0
+  local dot,na,nb = 0,0,0
   for i=1,#a do
-    dot=dot+a[i]*b[i]; na=na+a[i]^2; nb=nb+b[i]^2
+    dot = dot + a[i]*b[i]; na = na + a[i]^2; nb = nb + b[i]^2
   end
-  return dot/(math.sqrt(na)*math.sqrt(nb)+1e-8)
+  return dot / (math.sqrt(na)*math.sqrt(nb) + 1e-8)
 end
 
--- ── memoised corpus load --------------------------------------------------
-local VEC, TXT, META
-local function unpack_vec(blob)
-  local t,off={},1
-  for i=1,cfg.dim do
-    t[i],off = string.unpack('<f', blob, off)
-  end
-  return t
-end
+-- ── load vectors once per session ---------------------------------------
+local VEC, TXT
+local function load_vectors()
+  if VEC then return VEC, TXT end
 
-local function load_corpus()
-  if VEC then return VEC,TXT,META end
-  local db = sqlite{ uri=db_path(), create=false, opts={keep_open=true}}
-  local rows = db:eval([[
-      SELECT raw.rowid AS id,
-             fts.text     AS txt,
-             raw.vec      AS vec,
-             fts.path     AS path,
-             fts.library  AS lib
-        FROM ]]..cfg.tableBase..[[_raw  AS raw
-   INNER JOIN ]]..cfg.tableBase..[[_fts  AS fts
-          ON fts.rowid = raw.rowid
-  ]]) or {}
+  -- open connection immediately and keep it open
+  local db = require('sqlite'){
+    uri   = db_path(),
+    create = false,                 -- DB already exists
+    opts  = { keep_open = true },   -- <<< important
+  }
 
-  VEC, TXT, META = {}, {}, {}
+  local rows = db:eval('SELECT text, vec FROM '..cfg.dbName) or {}
+  VEC, TXT = {}, {}
   for _,r in ipairs(rows) do
-    VEC[#VEC+1]  = unpack_vec(r.vec)
-    TXT[#TXT+1]  = r.txt
-    META[#META+1]= { path=r.path or '', lib=r.lib or '' }
+    local v = fn.json_decode(r.vec)  -- we stored JSON
+    VEC[#VEC+1] = v
+    TXT[#TXT+1] = r.text
   end
-  return VEC, TXT, META
+  return VEC, TXT
 end
 
--- ── retrieval -------------------------------------------------------------
-local function retrieve(q)
-  local qkw, total_kw = {},0
-  for w in q:lower():gmatch('%w+') do
-    if #w>3 then
-      if not qkw[w] then total_kw=total_kw+1; qkw[w]=true end
-    end
+-- ── retrieve top-K --------------------------------------------------------
+local function retrieve(question)
+  -------------------------------------------------
+  -- 0. keyword set from query --------------------
+  -------------------------------------------------
+  local qkw = {}
+  for w in question:lower():gmatch('%w+') do
+    if #w > 3 then qkw[w] = true end
   end
-  if total_kw==0 then return {} end
+  local qk_total = vim.tbl_count(qkw)
 
-  local qvec           = embed(q)
-  local vecs, texts, meta = load_corpus()
-  if #vecs==0 then return {} end
+  -------------------------------------------------
+  -- 1. semantic vector for query -----------------
+  -------------------------------------------------
+  local qvec        = embed(question)
+  local vecs, texts = load_vectors()
 
-  local scored={}
-  for i,vec in ipairs(vecs) do
-    local txtL = texts[i]:lower()
+  -------------------------------------------------
+  -- 2. scan & score chunks -----------------------
+  -------------------------------------------------
+  local scored = {}
+  for idx, vec in ipairs(vecs) do
+    local txt  = texts[idx]
+    local low  = txt:lower()
+
+    -- (a) quick path-match check (we stored file path in the first line)
+    local path = low:match('^///%s*([^\n]+)') or ''
+    local path_hit = 0
+    for kw in pairs(qkw) do
+      if path:find(kw, 1, true) then path_hit = 1; break end
+    end
+    if path_hit == 0 and path:find('/audio') then
+      goto continue      -- hard-block obvious wrong domains (example)
+    end
+
+    -- (b) keyword coverage inside chunk
     local hits = 0
-    for kw in pairs(qkw) do if txtL:find(kw,1,true) then hits=hits+1 end end
-    if hits < math.ceil(total_kw/2) then goto continue end
-
-    local bonus=0
     for kw in pairs(qkw) do
-      if meta[i].path:find(kw,1,true) then bonus=bonus+0.25; break end
+      if low:find(kw, 1, true) then hits = hits + 1 end
     end
-    for kw in pairs(qkw) do
-      if meta[i].lib:find(kw,1,true) then bonus=bonus+0.15; break end
-    end
+    if hits < 2 then goto continue end   -- require ≥2 distinct keywords
 
-    local score = cosine(qvec,vec)*(hits/total_kw)*(1.0+bonus)
-    scored[#scored+1]={idx=i,score=score}
+    -- (c) hybrid score
+    local cover = hits / qk_total        -- 0-1
+    local score = cosine(qvec, vec) * cover * (1.0 + path_hit * 0.25)
+
+    scored[#scored+1] = { idx = idx, score = score }
     ::continue::
   end
-  table.sort(scored,function(a,b) return a.score>b.score end)
 
-  local out={}
-  for i=1,math.min(cfg.topK,#scored) do
-    out[#out+1]=texts[scored[i].idx]
+  -------------------------------------------------
+  -- 3. top-K -------------------------------------
+  -------------------------------------------------
+  table.sort(scored, function(a,b) return a.score > b.score end)
+  local out = {}
+  for i = 1, math.min(cfg.topK, #scored) do
+    out[#out+1] = texts[scored[i].idx]
   end
   return out
 end
 
--- ── streaming chat --------------------------------------------------------
-local function stream_chat(prompt, out_buf)
-  local pend=''
-  api.nvim_buf_set_option(out_buf,'modifiable',true)
+-- ── streaming chat 
+local function chat(prompt, out_buf)
+  local pending = ''
+
+  -- open for writing once
+  api.nvim_buf_set_option(out_buf, 'modifiable', true)
 
   fn.jobstart({
     'curl','-s','-N','-X','POST',cfg.chatEndpoint,
     '-H','Content-Type: application/json',
     '-d', fn.json_encode{
-      model='gemma3-4b-it',stream=true,
+      model='gemma3-4b-it',
+      stream=true,
       messages={{role='user',content=prompt}}
-    }},{
+    }
+  },{
     stdout_buffered=false,
     on_stdout=function(_,data)
-      for _,ln in ipairs(data or {}) do
-        if ln:sub(1,6)~='data: ' then goto cont end
-        local js=ln:sub(7)
-        if js=='[DONE]' then
-          if #pend>0 then api.nvim_buf_set_lines(out_buf,-1,-1,false,{pend}) end
-          api.nvim_buf_set_option(out_buf,'modifiable',false); return
+      if not data then return end
+      for _,ln in ipairs(data) do
+        if ln:sub(1,6) ~= 'data: ' then goto continue end
+        local js = ln:sub(7)
+        if js == '[DONE]' then
+          -- flush tail fragment
+          if #pending > 0 then
+            api.nvim_buf_set_lines(out_buf, -1, -1, false, { pending })
+          end
+          api.nvim_buf_set_option(out_buf, 'modifiable', false)
+          return
         end
-        local ok,obj=pcall(fn.json_decode,js)
+        local ok, obj = pcall(fn.json_decode, js)
         if ok and obj.choices then
-          local d=obj.choices[1].delta.content
-          if d then
-            pend=pend..d
-            local flush={}
-            for line in pend:gmatch('(.-)\n') do flush[#flush+1]=line end
-            if #flush>0 then
-              api.nvim_buf_set_lines(out_buf,-1,-1,false,flush)
-              pend=pend:match('.*\n(.*)') or ''
+          local delta = obj.choices[1].delta.content
+          if type(delta) == 'string' then
+            pending = pending .. delta
+            local flush = {}
+            for line in pending:gmatch('(.-)\n') do
+              flush[#flush+1] = line
+            end
+            if #flush > 0 then
+              api.nvim_buf_set_lines(out_buf, -1, -1, false, flush)
+              pending = pending:match('.*\n(.*)') or ''
             end
           end
         end
-        ::cont::
+        ::continue::
       end
-    end})
-end
-
--- ── tiny UI (prompt → result) --------------------------------------------
-local S={pbuf=nil,pwin=nil,rbuf=nil,rwin=nil}
-local function close_all()
-  for _,w in ipairs{S.pwin,S.rwin} do if w and api.nvim_win_is_valid(w) then api.nvim_win_close(w,true) end end
-  for _,b in ipairs{S.pbuf,S.rbuf} do if b and api.nvim_buf_is_valid(b) then api.nvim_buf_delete(b,{force=true}) end end
-  S={pbuf=nil,pwin=nil,rbuf=nil,rwin=nil}
-end
-local function open_prompt()
-  local w=math.floor(vim.o.columns*0.6)
-  local row,col=math.floor(vim.o.lines/2-1),math.floor((vim.o.columns-w)/2)
-  S.pbuf=api.nvim_create_buf(false,true)
-  api.nvim_buf_set_option(S.pbuf,'buftype','prompt')
-  fn.prompt_setprompt(S.pbuf,'Ask ▶ ')
-  S.pwin=api.nvim_open_win(S.pbuf,true,{relative='editor',row=row,col=col,width=w,height=3,style='minimal',border='single'})
-  api.nvim_command('startinsert')
-  vim.keymap.set('i','<CR>',function()
-    local q=table.concat(api.nvim_buf_get_lines(S.pbuf,0,-1,false),'\n'):gsub('^Ask ▶ ','')
-    if q=='' then close_all();return end
-    close_all();                       -- hide prompt
-    local rw=math.floor(vim.o.columns*0.8)
-    local rh=math.floor(vim.o.lines*0.65)
-    S.rbuf=api.nvim_create_buf(false,true)
-    api.nvim_buf_set_option(S.rbuf,'filetype','markdown')
-    S.rwin=api.nvim_open_win(S.rbuf,true,{relative='editor',
-      row=(vim.o.lines-rh)/2,col=(vim.o.columns-rw)/2,width=rw,height=rh,
-      style='minimal',border={'▛','▀','▜','▐','▟','▄','▙','▌'}})
-
-    local ctx=retrieve(q)
-    if #ctx==0 then
-      api.nvim_buf_set_lines(S.rbuf,0,-1,false,{'⚠️  No relevant context in RAG DB.'})
-      return
     end
-    local prompt="Use the following API/library snippets to answer concisely:\n\n"
-    for i,c in ipairs(ctx) do prompt=prompt..('--- snippet %d ---\n%s\n\n'):format(i,c) end
-    prompt=prompt.."Q: "..q.."\nA:"
-    stream_chat(prompt,S.rbuf)
-  end,{buffer=S.pbuf})
+  })
 end
 
--- ── public ----------------------------------------------------------------
-local M={}
+
+-- ── UI: prompt & output windows -----------------------------------------
+local State = { prompt_buf=nil,prompt_win=nil, resp_buf=nil,resp_win=nil }
+
+local function close_all()
+  for _,k in ipairs{'resp_win','prompt_win'} do
+    if State[k] and api.nvim_win_is_valid(State[k]) then
+      api.nvim_win_close(State[k], true)
+    end
+  end
+  for _,k in ipairs{'resp_buf','prompt_buf'} do
+    if State[k] and api.nvim_buf_is_valid(State[k]) then
+      api.nvim_buf_delete(State[k], {force=true})
+    end
+  end
+  State = { prompt_buf=nil,prompt_win=nil,resp_buf=nil,resp_win=nil }
+end
+
+local function open_prompt()
+  if State.prompt_win and api.nvim_win_is_valid(State.prompt_win) then
+    api.nvim_set_current_win(State.prompt_win); return
+  end
+  local w = math.floor(vim.o.columns*0.6)
+  local row,col = math.floor(vim.o.lines/2-1), math.floor((vim.o.columns-w)/2)
+  State.prompt_buf = api.nvim_create_buf(false,true)
+  api.nvim_buf_set_option(State.prompt_buf,'buftype','prompt')
+  fn.prompt_setprompt(State.prompt_buf,'Ask ▶ ')
+  State.prompt_win = api.nvim_open_win(State.prompt_buf,true,{
+    relative='editor',row=row,col=col,width=w,height=3,
+    style='minimal',border='single'
+  })
+  api.nvim_command('startinsert')
+end
+
+local function open_output()
+  local w = math.floor(vim.o.columns*0.8)
+  local h = math.floor(vim.o.lines*0.65)
+  local row,col = math.floor((vim.o.lines-h)/2), math.floor((vim.o.columns-w)/2)
+  State.resp_buf = api.nvim_create_buf(false,true)
+  api.nvim_buf_set_option(State.resp_buf,'filetype','markdown')
+  State.resp_win = api.nvim_open_win(State.resp_buf,true,{
+    relative='editor',row=row,col=col,width=w,height=h,
+    style='minimal',border={'▛','▀','▜','▐','▟','▄','▙','▌'}
+  })
+end
+
+-- ── main flow -------------------------------------------------------------
+local function handle_submit()
+  local q = table.concat(api.nvim_buf_get_lines(
+            State.prompt_buf,0,-1,false),'\n'):gsub('^Ask ▶ ','')
+  if q=='' then close_all(); return end
+  close_all()                   -- close prompt
+  open_output()
+
+  -- build augmented prompt
+  local ctx = retrieve(q)
+  local prompt = "Use the snippets below to answer the question.\n\n"
+  for i,c in ipairs(ctx) do
+    prompt = prompt..("----- snippet %d -----\n%s\n\n"):format(i,c)
+  end
+  prompt = prompt.."Q: "..q.."\nA: "
+
+  chat(prompt, State.resp_buf)
+end
+
+-- ── public setup ----------------------------------------------------------
+local M = {}
 function M.open() open_prompt() end
 function M.setup()
-  api.nvim_create_user_command('ApolloAsk',function() M.open() end,{})
+  vim.api.nvim_create_user_command('ApolloAsk', function() M.open() end, {})
+  -- map <CR> inside prompt buffer once it exists
+  vim.api.nvim_create_autocmd('BufWinEnter',{
+    pattern='*',
+    callback=function(a)
+      if a.buf==State.prompt_buf then
+        vim.keymap.set('i','<CR>',handle_submit,{buffer=a.buf})
+      end
+    end
+  })
 end
+
 return M
