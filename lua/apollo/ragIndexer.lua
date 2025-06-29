@@ -78,7 +78,7 @@ local function get_functions(bufnr, lang)
       (function_definition) 
       (method_definition)
     ] @def
-  ]])
+    ]])
 
   for _, match in query:iter_matches(root, bufnr, 0, -1) do
     local node = match[1]
@@ -136,10 +136,12 @@ local function embed_file(path)
   end
 
   local lang  = ftd.detect_from_extension(path)
-                or ftd.detect(path, {}) or 'txt'
+  or ftd.detect(path, {}) or 'txt'
   local db    = open_db()
-  local bufnr = api.nvim_buf_get_number(path)
-
+  local bufnr = fn.bufnr(path, true)
+  if not api.nvim_buf_is_loaded(bufnr) then
+    fn.bufload(bufnr)
+  end
   -- find all top-level functions
   local funcs = get_functions(bufnr, lang)
   if vim.tbl_isempty(funcs) then
