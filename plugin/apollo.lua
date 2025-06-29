@@ -4,20 +4,15 @@ vim.g.loaded_apollo = true
 
 -- enhanced loader: pass opts table when given
 local function load(mod, opts)
-  -------------------------------------------------------------------------
-  -- 1. safely require the module; the table goes into `modtbl` (NOT `pack`)
-  -------------------------------------------------------------------------
-  local ok, modtbl = pcall(require, mod)
+  local ok, modret = pcall(require, mod)      -- <- renamed to modret
+
   if not ok then
-    vim.notify('[apollo.nvim] '..modtbl, vim.log.levels.ERROR)
+    vim.notify('[apollo.nvim] '..modret, vim.log.levels.ERROR)
     return
   end
 
-  -------------------------------------------------------------------------
-  -- 2. run .setup(opts) if the module exposes it
-  -------------------------------------------------------------------------
-  if type(modtbl.setup) == 'function' then
-    local ok2, err = pcall(modtbl.setup, opts)
+  if type(modret) == 'table' and type(modret.setup) == 'function' then
+    local ok2, err = pcall(modret.setup, opts)
     if not ok2 then
       vim.notify('[apollo.nvim] '..err, vim.log.levels.ERROR)
     end
