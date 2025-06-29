@@ -102,22 +102,25 @@ local function get_functions(bufnr, lang)
   return defs
 end
 
--- ── insert one snippet into DB --------------------------------------------
+local function exists(db, id)
+  local row = db:eval('SELECT 1 FROM '..cfg.tableName..' WHERE id=? LIMIT 1', id)
+  return type(row) == 'table' and row[1] ~= nil
+end
+
+-- insert one snippet (idempotent) ---------------------------------------------
 local function insert_snippet(db, meta, body)
+  local id = hash(meta.file .. meta.start_ln .. meta.end_ln .. body)
+  if exists(db, id) then return end        -- already stored → skip
+
   local vec, err = try_embed(body)
   if not vec then error(err) end
-  local tok    = select(2, body:gsub('%S+', ''))
-  local id     = hash(meta.file..meta.start_ln..meta.end_ln..body)
-  db:insert(cfg.tableName, {
-    id         = id,
-    parent     = meta.parent or '',
-    file       = meta.file,
-    lang       = meta.lang,
-    start_ln   = meta.start_ln,
-    end_ln     = meta.end_ln,
-    text       = body,
-    vec_json   = json_encode(vec),
-  })
+
+  db:eval(
+    'INSERT OR IGNORE INTO '..cfg.tableName..
+    ' (id,parent,file,lang,start_ln,end_ln,text,vec_json) VALUES (?,?,?,?,?,?,?,?)',
+    id, meta.parent or '', meta.file, meta.lang,
+    meta.start_ln, meta.end_ln, body, json_encode(vec)
+  )
 end
 
 -- ── recursive fallback split if too large -------------------------------
