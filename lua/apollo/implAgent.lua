@@ -231,7 +231,7 @@ local function handle_submit()
 
   -- build augmented prompt
   local ctx = retrieve(q)
-  local prompt = "Use the snippets below to answer the question.\n\n"
+  local prompt = "use the provided context which is a vector database embedded from this projects source files to provide a concise accurate response.\n\n"
   for i,c in ipairs(ctx) do
     prompt = prompt..("----- snippet %d -----\n%s\n\n"):format(i,c)
   end
