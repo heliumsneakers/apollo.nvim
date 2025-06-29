@@ -65,7 +65,9 @@ local function open_db()
   return DB
 end
 
-local ts = vim.treesitter
+-- ── Tree-sitter function finder ────────────────────────────────────────
+local ts   = vim.treesitter
+local util = require('nvim-treesitter.ts_utils')
 
 local function get_functions(bufnr, lang)
   local parser = ts.get_parser(bufnr, lang)
@@ -74,36 +76,30 @@ local function get_functions(bufnr, lang)
   local tree = parser:parse()[1]
   local root = tree:root()
 
-  -- pick only nodes we know exist
+  -- only these two node types
   local node_types = { "function_definition" }
   if lang == "javascript" or lang == "typescript" then
     table.insert(node_types, "method_definition")
   end
 
-  -- build an “or” query
-  local patterns = {}
+  -- build a single query with multiple captures
+  local pats = {}
   for _, n in ipairs(node_types) do
-    patterns[#patterns+1] = "(" .. n .. ") @def"
+    pats[#pats+1] = string.format("(%s) @def", n)
   end
-  local query = ts.query.parse(lang, table.concat(patterns, "\n"))
+  local query = ts.query.parse(lang, table.concat(pats, "\n"))
 
   local defs = {}
-  for _, match, _ in query:iter_matches(root, bufnr, 0, -1) do
-    for id, node in pairs(match) do
-      local name = query.captures[id]    -- capture name, e.g. "def"
-      if name == "def" and node then
-        -- use ts_utils to get range
-        local sr, sc, er, ec = node:range()
-        defs[#defs+1] = {
-          start_ln = sr + 1,
-          end_ln   = er + 1,
-        }
-      end
+  for id, node in query:iter_captures(root, bufnr, 0, -1) do
+    if query.captures[id] == "def" and node and node:range() then
+      local sr, _, er, _ = node:range()
+      defs[#defs+1] = { start_ln = sr + 1, end_ln = er + 1 }
     end
   end
 
   return defs
 end
+
 
 -- ── insert one snippet into DB --------------------------------------------
 local function insert_snippet(db, meta, body)
@@ -151,14 +147,13 @@ local function embed_file(path)
     return
   end
 
+  local bufnr = vim.fn.bufadd(path)
+  vim.fn.bufload(bufnr)
+
   local lang  = ftd.detect_from_extension(path)
   or ftd.detect(path, {}) or 'txt'
   local db    = open_db()
-  local bufnr = fn.bufnr(path, true)
-  if not api.nvim_buf_is_loaded(bufnr) then
-    fn.bufload(bufnr)
-  end
-  -- find all top-level functions
+   -- find all top-level functions
   local funcs = get_functions(bufnr, lang)
   if vim.tbl_isempty(funcs) then
     funcs = {{ start_ln = 1, end_ln = #lines }}
