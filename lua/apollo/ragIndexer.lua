@@ -69,17 +69,24 @@ end
 local function get_functions(bufnr, lang)
   local parser = vim.treesitter.get_parser(bufnr, lang)
   if not parser then return {} end
-  local tree, root = parser:parse()[1], nil
-  root = tree:root()
+  local tree = parser:parse()[1]
+  local root = tree:root()
+
+  -- pick the node types that exist in this language
+  local node_types = { "function_definition" }
+  if lang == "javascript" or lang == "typescript" then
+    table.insert(node_types, "method_definition")
+  end
+
+  -- build a little query that matches any of them
+  local pat = {}
+  for _, n in ipairs(node_types) do
+    -- wrap each in its own capture
+    pat[#pat+1] = string.format("(%s) @def", n)
+  end
+  local query = vim.treesitter.query.parse(lang, table.concat(pat, "\n"))
+
   local defs = {}
-
-  local query = vim.treesitter.query.parse(lang, [[
-    [
-      (function_definition) 
-      (method_definition)
-    ] @def
-    ]])
-
   for _, match in query:iter_matches(root, bufnr, 0, -1) do
     local node = match[1]
     local sr, _, er, _ = node:range()
