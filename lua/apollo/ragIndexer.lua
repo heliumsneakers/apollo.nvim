@@ -17,35 +17,36 @@ local function db_path()
   return ('%s/%s_rag.sqlite'):format(fn.stdpath('data'), cfg.projectName)
 end
 
+local DB -- << singleton handle
+
 local function open_db()
-  if open_db._db then return open_db._db end
-  local db = sqlite { uri = db_path(), create = true, opts = { keep_open = true } }
+  if DB and DB:isopen() then return DB end
 
-  db:execute(([[
-    CREATE VIRTUAL TABLE IF NOT EXISTS %s_fts USING fts5(
-      text, path UNINDEXED, lang UNINDEXED, library UNINDEXED,
-      tokens UNINDEXED, content=''
-    );]]):format(cfg.tableBase))
+  DB = sqlite{ uri=db_path(), create=true, opts={ keep_open=true } }
 
-  db:execute(([[
-    CREATE TABLE IF NOT EXISTS %s_raw(
-      rowid INTEGER PRIMARY KEY, vec BLOB
-    );]]):format(cfg.tableBase))
+  DB:execute(([[
+      CREATE VIRTUAL TABLE IF NOT EXISTS %s_fts USING fts5(
+        text, path UNINDEXED, lang UNINDEXED, library UNINDEXED,
+        tokens UNINDEXED, content=''
+      );]]):format(cfg.tableBase))
 
-  db:execute(([[
-    CREATE VIRTUAL TABLE IF NOT EXISTS %s_vss USING vss0(
-      vec(%d)
-    );]]):format(cfg.tableBase, cfg.dim))
+  DB:execute(([[
+      CREATE TABLE IF NOT EXISTS %s_raw(
+        rowid INTEGER PRIMARY KEY, vec BLOB
+      );]]):format(cfg.tableBase))
 
-  -- keep VSS in sync
-  db:execute(([[
-    CREATE TRIGGER IF NOT EXISTS trg_%s AFTER INSERT ON %s_raw
-    BEGIN
-      INSERT INTO %s_vss(rowid,vec) VALUES (new.rowid, new.vec);
-    END;]]):format(cfg.tableBase, cfg.tableBase..'_raw', cfg.tableBase))
+  DB:execute(([[
+      CREATE VIRTUAL TABLE IF NOT EXISTS %s_vss USING vss0(
+        vec(%d)
+      );]]):format(cfg.tableBase, cfg.dim))
 
-  open_db._db = db
-  return db
+  DB:execute(([[
+      CREATE TRIGGER IF NOT EXISTS trg_%s AFTER INSERT ON %s_raw
+      BEGIN
+        INSERT INTO %s_vss(rowid,vec) VALUES (new.rowid, new.vec);
+      END;]]):format(cfg.tableBase, cfg.tableBase..'_raw', cfg.tableBase))
+
+  return DB
 end
 
 -- ──────────────────────────────────────────────────────────────────────────
