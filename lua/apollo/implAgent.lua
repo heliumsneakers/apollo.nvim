@@ -181,45 +181,60 @@ end
 
 local function _stream(prompt)
   H.pending = ''
-  api.nvim_buf_set_option(UI.resp_buf,'modifiable',true)
+  api.nvim_buf_set_option(UI.resp_buf, 'modifiable', true)
+
   fn.jobstart({
-    'curl','-s','-N','-X','POST',cfg.chatEndpoint,
+    'curl','-s','-N','-X','POST', cfg.chatEndpoint,
     '-H','Content-Type: application/json',
-    '-d', fn.json_encode{
-      model='gemma3-4b-it',
-      stream=true,
-      messages={{role='user',content=prompt}},
-    }
-  },{
-    stdout_buffered=false,
-    on_stdout=function(_,d)
-      for _,raw in ipairs(d or {}) do
+    '-d', fn.json_encode({
+      model   = 'gemma3-4b-it',
+      stream  = true,
+      messages = { { role = 'user', content = prompt } },
+    })
+  }, {
+    stdout_buffered = false,
+    on_stdout = function(_, data)
+      for _, raw in ipairs(data or {}) do
         if not raw:match('^data: ') then goto continue end
         local js = raw:sub(7)
-        if js=='[DONE]' then
-          if #H.pending>0 then
-            api.nvim_buf_set_lines(UI.resp_buf,-1,-1,false,{H.pending})
-            vim.list_extend(H.history_lines,{H.pending})
+
+        -- ── stream finished ─────────────────────────────────────────────
+        if js == '[DONE]' then
+          if #H.pending > 0 then
+            api.nvim_buf_set_lines(UI.resp_buf, -1, -1, false, { H.pending })
+            vim.list_extend(H.history_lines, { H.pending })
+            H.pending = ''
           end
-          api.nvim_buf_set_option(UI.resp_buf,'modifiable',false); return
+          api.nvim_buf_set_option(UI.resp_buf, 'modifiable', false)
+          return
         end
-        local ok,chunk = pcall(fn.json_decode,js)
+
+        -- ── normal chunk ───────────────────────────────────────────────
+        local ok, chunk = pcall(fn.json_decode, js)
         if ok and chunk.choices then
-          local c = chunk.choices[1].delta.content
-          if c then
-            H.pending = H.pending .. c
-            local flush={}
-            for l in H.pending:gmatch('(.-)\n') do flush[#flush+1]=l end
-            if #flush>0 then
-              api.nvim_buf_set_lines(UI.resp_buf,-1,-1,false,flush)
-              vim.list_extend(H.history_lines,flush)
+          local delta = chunk.choices[1].delta.content      -- may be nil|userdata
+          if type(delta) ~= 'string' then
+            delta = ''                                      -- ignore non-text
+          end
+
+          if #delta > 0 then
+            H.pending = H.pending .. delta
+
+            -- flush complete lines
+            local flush = {}
+            for line in H.pending:gmatch('(.-)\n') do
+              flush[#flush + 1] = line
+            end
+            if #flush > 0 then
+              api.nvim_buf_set_lines(UI.resp_buf, -1, -1, false, flush)
+              vim.list_extend(H.history_lines, flush)
               H.pending = H.pending:match('.*\n(.*)') or ''
             end
           end
         end
         ::continue::
       end
-    end
+    end,
   })
 end
 
