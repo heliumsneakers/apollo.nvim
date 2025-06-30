@@ -37,8 +37,11 @@ local function embed(txt)
 end
 
 local function try_embed(txt)
-  local ok, vec = pcall(embed, txt)
-  return ok and vec or nil
+  local ok, res = pcall(embed, txt)
+  if ok then
+    return res            -- vec table
+  end
+  return nil, tostring(res)
 end
 
 ----------------------------------------------------------------- sqlite ---
@@ -62,21 +65,27 @@ local function open_db()
 end
 
 local function row_exists(db, id)
-  -- sqlite.lua returns a boolean when the statement produced no rows;
-  -- return true only when we actually received a row-table.
-  local r = db:eval(
-    'SELECT 1 FROM '..cfg.tableName..' WHERE id=? LIMIT 1', id
-  )
+  -- sqlite.lua returns a boolean when zero-rows; otherwise it is a table.
+  local r = db:eval('SELECT 1 FROM '..cfg.tableName..' WHERE id=? LIMIT 1', id)
   return type(r) == 'table' and r[1] ~= nil
 end
 
 local function insert_row(db, meta, body, vec)
-  local id = hash(meta.file..meta.start_ln..meta.end_ln..body)
-  if row_exists(db,id) then return id end   -- already done
-  db:eval('INSERT INTO '..cfg.tableName..
-          '(id,parent,file,lang,start_ln,end_ln,text,vec_json) VALUES(?,?,?,?,?,?,?,?)',
-          id, meta.parent or '', meta.file, meta.lang,
-          meta.start_ln, meta.end_ln, body, encode(vec))
+  local id = hash(meta.file .. meta.start_ln .. meta.end_ln .. body)
+  if row_exists(db, id) then          -- idempotent
+    return id
+  end
+
+  db:insert(cfg.tableName, {          -- one *table* → all params bound
+    id         = id,
+    parent     = meta.parent or '',
+    file       = meta.file,
+    lang       = meta.lang,
+    start_ln   = meta.start_ln,
+    end_ln     = meta.end_ln,
+    text       = body,
+    vec_json   = encode(vec),
+  })
   return id
 end
 
@@ -104,47 +113,39 @@ end
 
 -- ── recursive split-and-ingest (returns the chunk's id) ------------------
 local function split_and_ingest(db, meta, lines)
-  local joined = table.concat(lines, '\n')
+  local joined      = table.concat(lines, '\n')
+  local vec, err    = try_embed(joined)
 
-  --------------------------------------------------------------------------
-  -- a) try full block first
-  --------------------------------------------------------------------------
-  local vec = try_embed(joined)
+  -- -- a) success ---------------------------------------------------------
   if vec then
-    return insert_row(db, meta, joined, vec)   -- ← returns id
+    meta.id = insert_row(db, meta, joined, vec)   -- keep id for children
+    return meta.id
   end
 
-  --------------------------------------------------------------------------
-  -- b) on “too large” errors, split & recurse (but stop at ≤ 8 lines)
-  --------------------------------------------------------------------------
-  if #lines <= 8 then
-    vim.notify('[RAG] skip tiny chunk '..meta.file..':'..meta.start_ln,
-               vim.log.levels.WARN)
-    return nil
-  end
+  -- -- b) “too large” fallback -------------------------------------------
+  if err and err:match('too large') and #lines > 8 then
+    local mid   = math.floor(#lines / 2)
+    local left  = vim.list_slice(lines, 1, mid)
+    local right = vim.list_slice(lines, mid + 1, #lines)
 
-  local mid   = math.floor(#lines / 2)
-  local left  = vim.list_slice(lines, 1, mid)
-  local right = vim.list_slice(lines, mid + 1, #lines)
+    -- first half becomes parent anchor
+    local left_id = split_and_ingest(db, vim.tbl_extend('force', meta, {
+      end_ln = meta.start_ln + mid - 1,
+    }), left)
 
-  -- first half → become the parent anchor
-  local left_id = split_and_ingest(
-    db,
-    vim.tbl_extend('force', meta, { end_ln = meta.start_ln + mid - 1 }),
-    left
-  )
-
-  -- second half inherits parent pointer
-  split_and_ingest(
-    db,
-    vim.tbl_extend('force', meta, {
+    -- second half points back to the parent
+    split_and_ingest(db, vim.tbl_extend('force', meta, {
       start_ln = meta.start_ln + mid,
-      parent   = left_id,                -- may be nil if left failed
-    }),
-    right
-  )
+      parent   = left_id,
+    }), right)
 
-  return left_id
+    return left_id
+  end
+
+  -- -- c) irrecoverable failure ------------------------------------------
+  vim.notify('[RAG] failed to embed chunk '..meta.file..':'..meta.start_ln..
+             ' — '..(err or 'unknown error'), vim.log.levels.WARN)
+  return nil
 end
 
 ------------------------------------------------- per-file ingester -------
