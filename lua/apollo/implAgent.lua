@@ -58,43 +58,16 @@ local function cosine(a,b)
 end
 
 -- ── load & pre-filter corpus via SQL ────────────────────────────────────
-local function load_candidates(keywords)
-  local db = get_db()
+local function load_all()
+  local db   = get_db()
+  local sql  = ("SELECT text, vec_json AS vec FROM %s LIMIT %d")
+                 :format(cfg.dbTable, cfg.sqlLimit)
+  local rows = db:eval(sql) or {}        -- sqlite.lua returns {} | true
+  if rows == true then rows = {} end
 
-  -- 1. WHERE-clause for keyword pre-filter -------------------------------
-  local clauses, args = {}, {}
-  for kw, _ in pairs(keywords) do
-    clauses[#clauses+1] = "text LIKE ?"
-    args[#args+1]       = "%%"..kw.."%%"
-  end
-
-  -- 2. build SQL ----------------------------------------------------------
-  local sql
-  if #clauses > 0 then
-    sql = string.format(
-      "SELECT text, vec_json AS vec FROM %s WHERE %s LIMIT %d",
-      cfg.dbTable, table.concat(clauses, " OR "), cfg.sqlLimit
-    )
-  else
-    sql = string.format(
-      "SELECT text, vec_json AS vec FROM %s LIMIT %d",
-      cfg.dbTable, cfg.sqlLimit
-    )
-  end
-
-  -- 3. execute safely -----------------------------------------------------
-  local rows
-  if #args > 0 then
-    rows = db:eval(sql, table.unpack(args))
-  else
-    rows = db:eval(sql)          -- no placeholders ⇒ no args
-  end
-  if rows == true then rows = {} end   -- SQLite returns boolean when empty
-
-  -- 4. re-hydrate vectors -------------------------------------------------
   local vecs, texts = {}, {}
   for _, r in ipairs(rows) do
-    local v = fn.json_decode(r.vec)    -- alias lets us keep using “vec”
+    local v = fn.json_decode(r.vec)
     if type(v) == "table" then
       vecs[#vecs+1]  = v
       texts[#texts+1] = r.text
@@ -105,47 +78,55 @@ end
 
 -- ── hybrid retriever ─────────────────────────────────────────────────────
 local function retrieve(query)
-  -- 1) extract keywords (>3 chars) ----------------------------------------
-  local kw, total = {},0
+  ----------------------------------------------------------------
+  -- 1. tokenise query once (for optional keyword boosts)
+  ----------------------------------------------------------------
+  local kw, total = {}, 0
   for w in query:lower():gmatch('%w+') do
-    if #w>3 and not kw[w] then
-      kw[w]=true; total=total+1
+    if #w > 2 and not kw[w] then
+      kw[w] = true
+      total = total + 1
     end
   end
 
-  -- 2) load prefiltered candidates ----------------------------------------
-  local vecs, texts = load_candidates(kw)
-  if #vecs==0 then return {} end
-
-  -- 3) embed query once --------------------------------------------------
+  ----------------------------------------------------------------
+  -- 2. load ENTIRE corpus (just a LIMIT) & embed the query
+  ----------------------------------------------------------------
+  local vecs, texts = load_all()
+  if #vecs == 0 then return {} end
   local qv = embed(query)
 
-  -- 4) score & sort -------------------------------------------------------
+  ----------------------------------------------------------------
+  -- 3. score each snippet
+  ----------------------------------------------------------------
   local scored = {}
-  for i,v in ipairs(vecs) do
+  for i, v in ipairs(vecs) do
     local txt   = texts[i]:lower()
-    local hits  = 0
+    --------------------------------------------------------------
+    -- optional keyword / path boosts (do NOT discard on zero hits)
+    --------------------------------------------------------------
+    local hits = 0
     for k in pairs(kw) do
-      if txt:find(k,1,true) then hits=hits+1 end
+      if txt:find(k, 1, true) then hits = hits + 1 end
     end
-    if hits>0 then
-      -- path-boost if your header “/// file…” contains the keyword
-      local path = txt:match('^///%s*([^\n]+)') or ''
-      local path_hit = 0
-      for k in pairs(kw) do
-        if path:find(k,1,true) then path_hit=1; break end
-      end
-      -- hybrid score: semantic × coverage × (1 + path_boost)
-      local cover = hits/total
-      local score = cosine(qv,v)*cover*(1 + 0.2*path_hit)
-      scored[#scored+1] = { idx=i, score=score }
-    end
-  end
-  table.sort(scored, function(a,b) return a.score>b.score end)
+    local cover = (total > 0) and (hits / total) or 1          -- ∈[0,1]
 
-  -- 5) return top-K snippets ---------------------------------------------
+    local path  = txt:match('^///%s*([^\n]+)') or ''
+    local path_hit = 0
+    for k in pairs(kw) do
+      if path:find(k, 1, true) then path_hit = 1; break end
+    end
+
+    local score = cosine(qv, v) * cover * (1 + 0.2 * path_hit)
+    scored[#scored+1] = { idx = i, score = score }
+  end
+  table.sort(scored, function(a, b) return a.score > b.score end)
+
+  ----------------------------------------------------------------
+  -- 4. top-K
+  ----------------------------------------------------------------
   local out = {}
-  for i=1, math.min(cfg.topK, #scored) do
+  for i = 1, math.min(cfg.topK, #scored) do
     out[#out+1] = texts[scored[i].idx]
   end
   return out
