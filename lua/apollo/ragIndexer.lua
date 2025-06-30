@@ -61,8 +61,13 @@ local function open_db()
   return DB
 end
 
-local function row_exists(db,id)
-  return db:eval('SELECT 1 FROM '..cfg.tableName..' WHERE id=? LIMIT 1',id)[1]
+local function row_exists(db, id)
+  -- sqlite.lua returns a boolean when the statement produced no rows;
+  -- return true only when we actually received a row-table.
+  local r = db:eval(
+    'SELECT 1 FROM '..cfg.tableName..' WHERE id=? LIMIT 1', id
+  )
+  return type(r) == 'table' and r[1] ~= nil
 end
 
 local function insert_row(db, meta, body, vec)
@@ -97,34 +102,49 @@ local function get_funcs(bufnr, lang)
   return defs
 end
 
-------------------------------------------- recursive splitter / ingester --
+-- ── recursive split-and-ingest (returns the chunk's id) ------------------
 local function split_and_ingest(db, meta, lines)
-  local body = table.concat(lines,'\n')
-  local vec  = try_embed(body)
+  local joined = table.concat(lines, '\n')
 
-  if vec then                -- success on first try
-    insert_row(db, meta, body, vec)
-    return
+  --------------------------------------------------------------------------
+  -- a) try full block first
+  --------------------------------------------------------------------------
+  local vec = try_embed(joined)
+  if vec then
+    return insert_row(db, meta, joined, vec)   -- ← returns id
   end
 
-  if #lines <= 8 then        -- too small to split further → give up
-    vim.notify('[RAG] embed failed for '..meta.file..':'..meta.start_ln,
+  --------------------------------------------------------------------------
+  -- b) on “too large” errors, split & recurse (but stop at ≤ 8 lines)
+  --------------------------------------------------------------------------
+  if #lines <= 8 then
+    vim.notify('[RAG] skip tiny chunk '..meta.file..':'..meta.start_ln,
                vim.log.levels.WARN)
-    return
+    return nil
   end
 
-  ----------------- split --------------------------------------------------
-  local mid   = math.floor(#lines/2)
-  local left  = vim.list_slice(lines,1,mid)
-  local right = vim.list_slice(lines,mid+1,#lines)
+  local mid   = math.floor(#lines / 2)
+  local left  = vim.list_slice(lines, 1, mid)
+  local right = vim.list_slice(lines, mid + 1, #lines)
 
-  -- use the *left* chunk id as parent anchor
-  local parent_id = split_and_ingest(db, vim.tbl_extend('force',meta,
-                              {end_ln=meta.start_ln+mid-1}), left)
+  -- first half → become the parent anchor
+  local left_id = split_and_ingest(
+    db,
+    vim.tbl_extend('force', meta, { end_ln = meta.start_ln + mid - 1 }),
+    left
+  )
 
-  split_and_ingest(db, vim.tbl_extend('force',meta,{
-                              start_ln=meta.start_ln+mid,
-                              parent  = parent_id}), right)
+  -- second half inherits parent pointer
+  split_and_ingest(
+    db,
+    vim.tbl_extend('force', meta, {
+      start_ln = meta.start_ln + mid,
+      parent   = left_id,                -- may be nil if left failed
+    }),
+    right
+  )
+
+  return left_id
 end
 
 ------------------------------------------------- per-file ingester -------
