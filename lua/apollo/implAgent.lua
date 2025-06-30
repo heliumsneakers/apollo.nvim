@@ -53,39 +53,47 @@ local function cosine(a,b)
 end
 
 -- ── load & prefilter corpus via SQL ──────────────────────────────────────
+-- ── load & pre-filter corpus via SQL ─────────────────────────────────────
 local function load_candidates(keywords)
   local db = get_db()
 
-  -- build WHERE clauses
+  --------------------------------------------------------------------------
+  -- 1. build WHERE-clause for the keyword pre-filter
+  --------------------------------------------------------------------------
   local clauses, args = {}, {}
   for kw,_ in pairs(keywords) do
     clauses[#clauses+1] = "text LIKE ?"
-    args[#args+1]      = '%%'..kw..'%%'
+    args[#args+1]       = "%%"..kw.."%%"
   end
 
-  local sql, rows
-  if #clauses>0 then
+  local sql
+  if #clauses > 0 then
     sql = string.format(
-      "SELECT text, vec FROM %s WHERE %s LIMIT %d",
+      "SELECT text, vec_json AS vec    -- alias fixes old code\n"..
+      "FROM   %s                       \n"..
+      "WHERE  %s                       \n"..
+      "LIMIT  %d",
       cfg.dbTable,
       table.concat(clauses, " OR "),
       cfg.sqlLimit
     )
-    rows = db:eval(sql, unpack(args))
+  else
+    sql = string.format(
+      "SELECT text, vec_json AS vec FROM %s LIMIT %d",
+      cfg.dbTable, cfg.sqlLimit
+    )
   end
 
-  -- if no rows (or no keywords), fall back to all
-  if not rows or #rows==0 then
-    rows = db:eval(
-      ("SELECT text, vec FROM %s LIMIT %d"):format(cfg.dbTable, cfg.sqlLimit)
-    ) or {}
-  end
+  local rows = db:eval(sql, unpack(args)) or {}
 
+  --------------------------------------------------------------------------
+  -- 2. re-hydrate vectors & return tables {vecs, texts}
+  --------------------------------------------------------------------------
   local vecs, texts = {}, {}
   for _, r in ipairs(rows) do
-    local v = fn.json_decode(r.vec)
-    if type(v)=='table' then
-      vecs[#vecs+1] = v
+    local v = fn.json_decode(r.vec)       -- still referenced as “vec” here
+    if type(v) == "table" then
+      vecs[#vecs+1]  = v
       texts[#texts+1] = r.text
     end
   end
