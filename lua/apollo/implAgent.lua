@@ -116,8 +116,9 @@ local function retrieve(query)
     for k in pairs(kw) do
       if path:find(k, 1, true) then path_hit = 1; break end
     end
-
-    local score = cosine(qv, v) * cover * (1 + 0.2 * path_hit)
+    
+    -- Add cover variable cosine(x) * cover * (norm) if missing too much
+    local score = cosine(qv, v) * (1 + 0.2 * path_hit)
     scored[#scored+1] = { idx = i, score = score }
   end
   table.sort(scored, function(a, b) return a.score > b.score end)
