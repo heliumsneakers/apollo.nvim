@@ -52,30 +52,23 @@ local function cosine(a,b)
   return dot / (math.sqrt(na)*math.sqrt(nb) + 1e-8)
 end
 
--- ── load & prefilter corpus via SQL ──────────────────────────────────────
--- ── load & pre-filter corpus via SQL ─────────────────────────────────────
+-- ── load & pre-filter corpus via SQL ────────────────────────────────────
 local function load_candidates(keywords)
   local db = get_db()
 
-  --------------------------------------------------------------------------
-  -- 1. build WHERE-clause for the keyword pre-filter
-  --------------------------------------------------------------------------
+  -- 1. WHERE-clause for keyword pre-filter -------------------------------
   local clauses, args = {}, {}
-  for kw,_ in pairs(keywords) do
+  for kw, _ in pairs(keywords) do
     clauses[#clauses+1] = "text LIKE ?"
     args[#args+1]       = "%%"..kw.."%%"
   end
 
+  -- 2. build SQL ----------------------------------------------------------
   local sql
   if #clauses > 0 then
     sql = string.format(
-      "SELECT text, vec_json AS vec    -- alias fixes old code\n"..
-      "FROM   %s                       \n"..
-      "WHERE  %s                       \n"..
-      "LIMIT  %d",
-      cfg.dbTable,
-      table.concat(clauses, " OR "),
-      cfg.sqlLimit
+      "SELECT text, vec_json AS vec FROM %s WHERE %s LIMIT %d",
+      cfg.dbTable, table.concat(clauses, " OR "), cfg.sqlLimit
     )
   else
     sql = string.format(
@@ -84,14 +77,19 @@ local function load_candidates(keywords)
     )
   end
 
-  local rows = db:eval(sql, unpack(args)) or {}
+  -- 3. execute safely -----------------------------------------------------
+  local rows
+  if #args > 0 then
+    rows = db:eval(sql, table.unpack(args))
+  else
+    rows = db:eval(sql)          -- no placeholders ⇒ no args
+  end
+  if rows == true then rows = {} end   -- SQLite returns boolean when empty
 
-  --------------------------------------------------------------------------
-  -- 2. re-hydrate vectors & return tables {vecs, texts}
-  --------------------------------------------------------------------------
+  -- 4. re-hydrate vectors -------------------------------------------------
   local vecs, texts = {}, {}
   for _, r in ipairs(rows) do
-    local v = fn.json_decode(r.vec)       -- still referenced as “vec” here
+    local v = fn.json_decode(r.vec)    -- alias lets us keep using “vec”
     if type(v) == "table" then
       vecs[#vecs+1]  = v
       texts[#texts+1] = r.text
