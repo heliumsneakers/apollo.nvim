@@ -297,7 +297,7 @@ function M._send()
 
   -- build RAG prompt
   local ctx = retrieve(query)
-  local prompt = "Answer the question using only the context snippets below.\n\n"
+  local prompt = "Answer the question using your intuition and the context snippets. Try to the best of your ability to convert your logic into the snippet information provided.\n\n"
   for i,c in ipairs(ctx) do
     prompt = prompt..("----- snippet %d -----\n%s\n\n"):format(i,c)
   end
