@@ -3,6 +3,9 @@
 local api, fn = vim.api, vim.fn
 local sqlite  = require('sqlite')
 
+local UI  = { resp_buf=nil, resp_win=nil, input_buf=nil, input_win=nil }
+local H   = { history_lines = {}, pending = '' }   -- per-session state
+
 -- ── configuration ────────────────────────────────────────────────────────
 local cfg = {
   projectName  = fn.fnamemodify(fn.getcwd(), ':t'),
@@ -42,6 +45,7 @@ local function embed(text)
   return res.data[1].embedding
 end
 
+-- THIS is the meat of semantic search. Maybe find a way to SIMD this with a kernel written in C. 
 local function cosine(a,b)
   local dot, na, nb = 0,0,0
   for i=1,#a do
@@ -146,40 +150,89 @@ local function retrieve(query)
   return out
 end
 
--- ── chat streamer (unchanged) ────────────────────────────────────────────
-local function stream_chat(prompt, buf)
-  local pending = ""
-  api.nvim_buf_set_option(buf,'modifiable',true)
+local function _flatten(buf)
+  if not api.nvim_buf_is_valid(buf) then return end
+  local l = api.nvim_buf_get_lines(buf, 0, -1, false)
+  if #l > 1 then
+    local j = table.concat(l, ' '):gsub('%s+$','')
+    api.nvim_buf_set_lines(buf, 0, -1, false, { j })
+    api.nvim_win_set_cursor(0, { 1, #j })
+  end
+end
+
+local function _center(lines, total_w)
+  local max = 0
+  for _,ln in ipairs(lines) do
+    local w = vim.fn.strdisplaywidth(ln:gsub('%s+$',''))
+    if w>max then max=w end
+  end
+  local pad  = math.max(math.floor((total_w-max)/2),0)
+  local pref = (' '):rep(pad)
+  local out  = {}
+  for _,ln in ipairs(lines) do out[#out+1] = pref..ln end
+  return out
+end
+
+local function _splash()
+  return {
+    "                                                    ",
+    "  █████╗ ██████╗  ██████╗ ██╗     ██╗      ██████╗  ",
+    " ██╔══██╗██╔══██╗██╔═══██╗██║     ██║     ██╔═══██╗ ",
+    " ███████║██████╔╝██║   ██║██║     ██║     ██║   ██║ ",
+    " ██╔══██║██╔═══╝ ██║   ██║██║     ██║     ██║   ██║ ",
+    " ██║  ██║██║     ╚██████╔╝███████╗███████╗╚██████╔╝ ",
+    " ╚═╝  ╚╝ ╚═╝      ╚═════╝ ╚══════╝╚══════╝ ╚═════╝  ",
+    "                                                    ",
+  }
+end
+
+local function _close(reset_history)
+  for _,w in pairs{UI.resp_win, UI.input_win} do
+    if w and api.nvim_win_is_valid(w) then api.nvim_win_close(w,true) end
+  end
+  for _,b in pairs{UI.resp_buf, UI.input_buf} do
+    if b and api.nvim_buf_is_valid(b) then api.nvim_buf_delete(b,{force=true}) end
+  end
+  UI = { resp_buf=nil, resp_win=nil, input_buf=nil, input_win=nil }
+  if reset_history then H.history_lines = {} end
+end
+
+local function _stream(prompt)
+  H.pending = ''
+  api.nvim_buf_set_option(UI.resp_buf,'modifiable',true)
   fn.jobstart({
     'curl','-s','-N','-X','POST',cfg.chatEndpoint,
     '-H','Content-Type: application/json',
     '-d', fn.json_encode{
       model='gemma3-4b-it',
       stream=true,
-      messages={{role='user',content=prompt}}
+      messages={{role='user',content=prompt}},
     }
   },{
     stdout_buffered=false,
-    on_stdout = function(_, data)
-      for _, ln in ipairs(data or {}) do
-        if not ln:match('^data: ') then goto continue end
-        local js = ln:sub(7)
+    on_stdout=function(_,d)
+      for _,raw in ipairs(d or {}) do
+        if not raw:match('^data: ') then goto continue end
+        local js = raw:sub(7)
         if js=='[DONE]' then
-          if #pending>0 then api.nvim_buf_set_lines(buf,-1,-1,false,{pending}) end
-          api.nvim_buf_set_option(buf,'modifiable',false)
-          return
-        end
-        local ok, obj = pcall(fn.json_decode, js)
-        if ok and obj.choices then
-          local delta = obj.choices[1].delta.content or ""
-          pending = pending .. delta
-          local flush = {}
-          for line in pending:gmatch('(.-)\n') do
-            flush[#flush+1] = line
+          if #H.pending>0 then
+            api.nvim_buf_set_lines(UI.resp_buf,-1,-1,false,{H.pending})
+            vim.list_extend(H.history_lines,{H.pending})
           end
-          if #flush>0 then
-            api.nvim_buf_set_lines(buf, -1, -1, false, flush)
-            pending = pending:match('.*\n(.*)') or ""
+          api.nvim_buf_set_option(UI.resp_buf,'modifiable',false); return
+        end
+        local ok,chunk = pcall(fn.json_decode,js)
+        if ok and chunk.choices then
+          local c = chunk.choices[1].delta.content
+          if c then
+            H.pending = H.pending .. c
+            local flush={}
+            for l in H.pending:gmatch('(.-)\n') do flush[#flush+1]=l end
+            if #flush>0 then
+              api.nvim_buf_set_lines(UI.resp_buf,-1,-1,false,flush)
+              vim.list_extend(H.history_lines,flush)
+              H.pending = H.pending:match('.*\n(.*)') or ''
+            end
           end
         end
         ::continue::
@@ -189,77 +242,79 @@ local function stream_chat(prompt, buf)
 end
 
 -- ── minimal UI layer (same as before) ────────────────────────────────────
-local UI = { prompt_buf=nil, prompt_win=nil, resp_buf=nil, resp_win=nil }
+local function _open_ui()
+  local tot    = vim.o.lines
+  local resp_h = math.floor(tot*0.65)
+  local in_h   = tot - resp_h - 10
+  local width  = math.floor(vim.o.columns*0.8)
+  local col    = math.floor((vim.o.columns-width)/2)
 
-local function close_ui()
-  for _, w in ipairs{UI.resp_win, UI.prompt_win} do
-    if w and api.nvim_win_is_valid(w) then api.nvim_win_close(w,true) end
+  -- response buffer / window
+  if not (UI.resp_buf and api.nvim_buf_is_valid(UI.resp_buf)) then
+    UI.resp_buf = api.nvim_create_buf(false,true)
+    api.nvim_buf_set_option(UI.resp_buf,'filetype','markdown')
   end
-  for _, b in ipairs{UI.resp_buf, UI.prompt_buf} do
-    if b and api.nvim_buf_is_valid(b) then api.nvim_buf_delete(b,{force=true}) end
-  end
-  UI = { prompt_buf=nil, prompt_win=nil, resp_buf=nil, resp_win=nil }
-end
-
-local function open_prompt()
-  if UI.prompt_win and api.nvim_win_is_valid(UI.prompt_win) then
-    api.nvim_set_current_win(UI.prompt_win); return
-  end
-  local w = math.floor(vim.o.columns*0.6)
-  UI.prompt_buf = api.nvim_create_buf(false,true)
-  api.nvim_buf_set_option(UI.prompt_buf,'buftype','prompt')
-  fn.prompt_setprompt(UI.prompt_buf,'Ask ▶ ')
-  UI.prompt_win = api.nvim_open_win(UI.prompt_buf,true,{
-    relative='editor',
-    row=math.floor(vim.o.lines/2-1),
-    col=math.floor((vim.o.columns-w)/2),
-    width=w, height=3,
-    style='minimal', border='single',
-  })
-  api.nvim_command('startinsert')
-end
-
-local function open_resp()
-  local w,h = math.floor(vim.o.columns*0.8), math.floor(vim.o.lines*0.65)
-  UI.resp_buf = api.nvim_create_buf(false,true)
-  api.nvim_buf_set_option(UI.resp_buf,'filetype','markdown')
   UI.resp_win = api.nvim_open_win(UI.resp_buf,true,{
-    relative='editor',
-    row=math.floor((vim.o.lines-h)/2),
-    col=math.floor((vim.o.columns-w)/2),
-    width=w, height=h,
-    style='minimal',
-    border={'▛','▀','▜','▐','▟','▄','▙','▌'},
+    relative='editor',row=1,col=col,width=width,height=resp_h,
+    style='minimal',border={'▛','▀','▜','▐','▟','▄','▙','▌'},
+  })
+  api.nvim_win_set_option(UI.resp_win,'wrap',true)
+
+  api.nvim_buf_set_option(UI.resp_buf,'modifiable',true)
+  local init = (#H.history_lines==0) and _center(_splash(),width)
+                                   or  H.history_lines
+  api.nvim_buf_set_lines(UI.resp_buf,0,-1,false,init)
+  api.nvim_buf_set_option(UI.resp_buf,'modifiable',false)
+
+  -- prompt buffer / window
+  if not (UI.input_buf and api.nvim_buf_is_valid(UI.input_buf)) then
+    UI.input_buf = api.nvim_create_buf(false,false)
+    api.nvim_buf_set_option(UI.input_buf,'buftype','prompt')
+    api.nvim_buf_set_option(UI.input_buf,'bufhidden','hide')
+  end
+  if #H.history_lines==0 then
+    api.nvim_buf_set_lines(UI.input_buf,0,-1,false,{})
+  end
+  UI.input_win = api.nvim_open_win(UI.input_buf,true,{
+    relative='editor',row=resp_h+2,col=col,
+    width=width,height=in_h,
+    style='minimal',border={'▛','▀','▜','▐','▟','▄','▙','▌'},
+  })
+  vim.fn.prompt_setprompt(UI.input_buf,'→ ')
+  api.nvim_command('startinsert')
+
+  api.nvim_buf_set_keymap(UI.input_buf,'i','<CR>',
+    [[<Cmd>lua require('apollo.implAgent')._send()<CR>]],
+    {noremap=true,silent=true})
+
+  api.nvim_create_autocmd({'TextChangedI','TextChangedP'},{
+    buffer=UI.input_buf, callback=function() _flatten(UI.input_buf) end,
   })
 end
 
-local function on_submit()
-  local q = table.concat(api.nvim_buf_get_lines(UI.prompt_buf,0,-1,false),'\n')
-            :gsub('^Ask ▶ ','')
-  if q=='' then return close_ui() end
-  close_ui(); open_resp()
+function M._send()
+  local raw = api.nvim_buf_get_lines(UI.input_buf,0,-1,false)
+  local query = table.concat(raw,' '):gsub('^→ ','')
+  api.nvim_buf_set_lines(UI.input_buf,0,-1,false,{})
+  if query=='' then return end
 
-  local ctx    = retrieve(q)
+  -- build RAG prompt
+  local ctx = retrieve(query)
   local prompt = "Answer the question using only the context snippets below.\n\n"
   for i,c in ipairs(ctx) do
     prompt = prompt..("----- snippet %d -----\n%s\n\n"):format(i,c)
   end
-  prompt = prompt.."Q: "..q.."\nA: "
+  prompt = prompt.."Q: "..query.."\nA: "
 
-  stream_chat(prompt, UI.resp_buf)
+  _stream(prompt)
 end
 
 -- ── command wiring ───────────────────────────────────────────────────────
 local M = {}
-function M.open() open_prompt() end
+function M.open() _open_ui() end
+function M.quit() _close(true) end
 function M.setup()
   api.nvim_create_user_command('ApolloAsk', M.open, {})
-  api.nvim_create_autocmd('BufWinEnter', {
-    callback = function(ev)
-      if ev.buf == UI.prompt_buf then
-        vim.keymap.set('i','<CR>', on_submit, { buffer = ev.buf })
-      end
-    end,
-  })
+  api.nvim_create_user_command('ApolloAskQuit', M.quit, {})
 end
 return M
