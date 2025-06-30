@@ -1,4 +1,5 @@
 -- lua/apollo/impl-agent.lua  –  RAG Q-and-A assistant (json-vec) with SQL prefilter
+local M = {}
 
 local api, fn = vim.api, vim.fn
 local sqlite  = require('sqlite')
@@ -310,7 +311,6 @@ function M._send()
 end
 
 -- ── command wiring ───────────────────────────────────────────────────────
-local M = {}
 function M.open() _open_ui() end
 function M.quit() _close(true) end
 function M.setup()
