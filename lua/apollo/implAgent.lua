@@ -109,7 +109,7 @@ local function retrieve(query)
     for k in pairs(kw) do
       if txt:find(k, 1, true) then hits = hits + 1 end
     end
-    local cover = (total > 0) and (hits / total) or 1          -- ∈[0,1]
+    local cover = (total > 0) and math.max(0.15, hits / total) or 1
 
     local path  = txt:match('^///%s*([^\n]+)') or ''
     local path_hit = 0
