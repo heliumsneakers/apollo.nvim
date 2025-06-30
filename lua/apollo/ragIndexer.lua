@@ -44,6 +44,34 @@ local function try_embed(txt)
   return nil, tostring(res)
 end
 
+local function _sort_by_start(t)
+  table.sort(t, function(a,b) return a.start_ln < b.start_ln end)
+  return t
+end
+
+-- fill the gaps between function-definitions so line-coverage == 100 %
+local function cover_whole_file(func_ranges, last_line)
+  if vim.tbl_isempty(func_ranges) then
+    return { { start_ln = 1, end_ln = last_line } }
+  end
+
+  local out   = {}
+  local prev  = 1                         -- first un-covered line
+
+  for _,r in ipairs(_sort_by_start(func_ranges)) do
+    if r.start_ln > prev then             -- gap *before* this function
+      table.insert(out, { start_ln = prev, end_ln = r.start_ln - 1 })
+    end
+    table.insert(out, r)                  -- the function itself
+    prev = r.end_ln + 1                   -- first line after it
+  end
+
+  if prev <= last_line then               -- tail of file not in a func
+    table.insert(out, { start_ln = prev, end_ln = last_line })
+  end
+  return out
+end
+
 ----------------------------------------------------------------- sqlite ---
 local DB
 local function open_db()
@@ -156,7 +184,7 @@ local function embed_file(path)
   local bufnr = fn.bufadd(path); fn.bufload(bufnr)
   local lang  = ftd.detect_from_extension(path) or ftd.detect(path,{}) or 'txt'
   local defs  = get_funcs(bufnr, lang)
-  if vim.tbl_isempty(defs) then defs={{start_ln=1,end_ln=#lines}} end
+  defs = cover_whole_file(defs, #lines)
 
   local db = open_db()
   for _,d in ipairs(defs) do
