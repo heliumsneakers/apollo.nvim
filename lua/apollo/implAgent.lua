@@ -86,39 +86,67 @@ local function retrieve(query)
     return {}
   end
 
-  -- embed query
-  local qv  = embed(query)
-  local dim = #qv
-  local q_c = ffi.new("float[?]", dim, qv)
+  -- 1) embed the query
+  local qv   = embed(query)
+  local qdim = #qv
+  local q_c  = ffi.new("float[?]", qdim, qv)
+  vim.notify(string.format("[RAG DEBUG] query dim = %d", qdim), vim.log.levels.DEBUG)
 
   local scored = {}
   for i, hexstr in ipairs(hexblobs) do
-    if #hexstr == dim * 8 then
-      -- hex → raw bytes
-      local raw = hexstr:gsub('..', function(cc)
-        return string.char(tonumber(cc, 16))
-      end)
-      local y_ptr = ffi.cast("const float *", raw)
-      local out   = ffi.new("double[1]")
-      neon.f32_cosine_distance_neon(q_c, y_ptr, out, dim)
-      scored[#scored+1] = { idx = i, score = tonumber(out[0]) }
+    -- 2) turn hex‐string back into raw byte length
+    local hexlen   = #hexstr
+    local raw_bytes = hexlen / 2
+    if raw_bytes % 4 ~= 0 then
+      vim.notify(string.format(
+        "[RAG WARN] blob[%d] hexlen=%d → raw_bytes=%d not divisible by 4, skipping",
+        i, hexlen, raw_bytes
+      ), vim.log.levels.WARN)
     else
-      vim.notify(
-        string.format("[RAG WARN] blob[%d] hex length mismatch: got %d, expected %d",
-          i, #hexstr, dim * 2),
-        vim.log.levels.WARN
-      )
+      local dim_blob = raw_bytes / 4
+      if dim_blob ~= qdim then
+        vim.notify(string.format(
+          "[RAG WARN] blob[%d] dim mismatch: stored=%d vs query=%d, skipping",
+          i, dim_blob, qdim
+        ), vim.log.levels.WARN)
+      else
+        -- 3) decode hex → raw bytes
+        local raw = hexstr:gsub('..', function(cc)
+          return string.char(tonumber(cc, 16))
+        end)
+        local y_ptr = ffi.cast("const float *", raw)
+
+        -- 4) compute cosine
+        local out = ffi.new("double[1]")
+        neon.f32_cosine_distance_neon(q_c, y_ptr, out, qdim)
+        local score = tonumber(out[0])
+        scored[#scored+1] = { idx = i, score = score }
+
+        -- log a few values to inspect
+        if i <= 3 then
+          vim.notify(string.format("[RAG DEBUG] cosine[%d] = %.6f", i, score),
+                     vim.log.levels.DEBUG)
+        elseif i == 4 then
+          vim.notify("[RAG DEBUG] …only logging first 3 scores…", vim.log.levels.DEBUG)
+        end
+      end
     end
   end
 
+  -- 5) sort & take top K
   table.sort(scored, function(a, b) return a.score > b.score end)
   local results = {}
   for j = 1, math.min(cfg.topK, #scored) do
-    results[#results+1] = texts[scored[j].idx]
+    local s = scored[j]
+    vim.notify(string.format(
+      "[RAG DEBUG] top[%d] idx=%d score=%.6f text=%q",
+      j, s.idx, s.score, texts[s.idx]:gsub("\n"," "):sub(1,40)
+    ), vim.log.levels.DEBUG)
+    results[#results+1] = texts[s.idx]
   end
+
   return results
 end
-
 
 local function _flatten(buf)
   if not api.nvim_buf_is_valid(buf) then return end
