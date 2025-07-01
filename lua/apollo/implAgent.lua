@@ -65,92 +65,61 @@ end
 -- load & pre-filter corpus via SQL, now returning raw float32 BLOBs
 
 local function load_all()
-  local db   = get_db()
-  local sql  = ("SELECT text, vec FROM %s"):format(cfg.dbTable)
+  local db  = get_db()
+  local sql = ("SELECT text, hex(vec) AS hexvec FROM %s"):format(cfg.dbTable)
   local rows = db:eval(sql) or {}
   if rows == true then rows = {} end
 
-  local texts, blobs = {}, {}
+  local texts, hexblobs = {}, {}
   for _, r in ipairs(rows) do
-    if type(r.vec) == "string" then
-      texts[#texts+1] = r.text
-      blobs[#blobs+1] = r.vec    -- raw float32 BLOB
-    end
+    texts[#texts+1]    = r.text
+    hexblobs[#hexblobs+1] = r.hexvec
   end
-  return texts, blobs
+  return texts, hexblobs
 end
 
 -- brute-force cosine search using raw BLOBs + NEON kernel
--- Replace your existing `retrieve` with this version that logs every step:
-
 local function retrieve(query)
-  -- 1) load & log count
-  local texts, blobs = load_all()
-  vim.notify(string.format("[RAG DEBUG] Loaded %d entries from DB", #texts),
-             vim.log.levels.DEBUG)
-  if #texts == 0 then return {} end
+  local texts, hexblobs = load_all()
+  if #texts == 0 then
+    vim.notify("[RAG WARN] no embeddings found in DB", vim.log.levels.WARN)
+    return {}
+  end
 
-  -- 2) embed the query & log
-  vim.notify(string.format("[RAG DEBUG] Embedding query: %q", query),
-             vim.log.levels.DEBUG)
-  local qv = embed(query)
-  vim.notify(string.format("[RAG DEBUG] Query embedding length: %d", #qv),
-             vim.log.levels.DEBUG)
+  -- embed query
+  local qv  = embed(query)
+  local dim = #qv
+  local q_c = ffi.new("float[?]", dim, qv)
 
-  local n   = #qv
-  local q_c = ffi.new("float[?]", n, qv)
-
-  -- 3) compute cosine similarity against each stored vector
-  vim.notify("[RAG DEBUG] Computing cosine similarities…", vim.log.levels.DEBUG)
   local scored = {}
-  for i, blob in ipairs(blobs) do
-    -- Check blob size
-    if #blob ~= n * 4 then
-      vim.notify(string.format(
-        "[RAG WARN] blob[%d] size mismatch: got %d bytes, expected %d",
-        i, #blob, n * 4
-      ), vim.log.levels.WARN)
-    else
-      local y_ptr = ffi.cast("const float *", blob)
+  for i, hexstr in ipairs(hexblobs) do
+    if #hexstr == dim * 2 then
+      -- hex → raw bytes
+      local raw = hexstr:gsub('..', function(cc)
+        return string.char(tonumber(cc, 16))
+      end)
+      local y_ptr = ffi.cast("const float *", raw)
       local out   = ffi.new("double[1]")
-      neon.f32_cosine_distance_neon(q_c, y_ptr, out, n)
-      local score = tonumber(out[0])
-
-      -- log first few scores to verify things are running
-      if i <= 5 then
-        vim.notify(string.format("[RAG DEBUG] cosine[%d] = %.6f", i, score),
-                   vim.log.levels.DEBUG)
-      elseif i == 6 then
-        vim.notify("[RAG DEBUG] …logging only first 5 scores…", vim.log.levels.DEBUG)
-      end
-
-      scored[#scored+1] = { idx = i, score = score }
+      neon.f32_cosine_distance_neon(q_c, y_ptr, out, dim)
+      scored[#scored+1] = { idx = i, score = tonumber(out[0]) }
+    else
+      vim.notify(
+        string.format("[RAG WARN] blob[%d] hex length mismatch: got %d, expected %d",
+          i, #hexstr, dim * 2),
+        vim.log.levels.WARN
+      )
     end
   end
 
-  -- 4) sort descending
   table.sort(scored, function(a, b) return a.score > b.score end)
-
-  -- 5) log the top-K picks
-  local top = math.min(cfg.topK, #scored)
-  vim.notify(string.format("[RAG DEBUG] Top %d results:", top),
-             vim.log.levels.DEBUG)
-  for j = 1, top do
-    local s = scored[j]
-    vim.notify(string.format(
-      "[RAG DEBUG] %d) idx=%d, score=%.6f, text=\"%s\"",
-      j, s.idx, s.score,
-      texts[s.idx]:gsub("\n"," "):sub(1,50)
-    ), vim.log.levels.DEBUG)
-  end
-
-  -- 6) collect and return the top-K texts
   local results = {}
-  for j = 1, top do
+  for j = 1, math.min(cfg.topK, #scored) do
     results[#results+1] = texts[scored[j].idx]
   end
   return results
 end
+
+
 local function _flatten(buf)
   if not api.nvim_buf_is_valid(buf) then return end
   local l = api.nvim_buf_get_lines(buf, 0, -1, false)
