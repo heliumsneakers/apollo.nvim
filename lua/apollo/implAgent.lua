@@ -63,17 +63,19 @@ local function embed(text)
 end
 
 -- load & pre-filter corpus via SQL, now returning raw float32 BLOBs
+
 local function load_all()
   local db   = get_db()
-  local sql  = ("SELECT text, vec AS blob")
-                 :format(cfg.dbTable, cfg.sqlLimit)
+  local sql  = ("SELECT text, vec FROM %s"):format(cfg.dbTable)
   local rows = db:eval(sql) or {}
   if rows == true then rows = {} end
 
   local texts, blobs = {}, {}
   for _, r in ipairs(rows) do
-    texts[#texts+1] = r.text
-    blobs[#blobs+1] = r.vec   -- r.vec is a Lua string of binary float32s
+    if type(r.vec) == "string" then
+      texts[#texts+1] = r.text
+      blobs[#blobs+1] = r.vec    -- raw float32 BLOB
+    end
   end
   return texts, blobs
 end
