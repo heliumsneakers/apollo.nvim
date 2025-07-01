@@ -65,7 +65,7 @@ end
 -- load & pre-filter corpus via SQL, now returning raw float32 BLOBs
 local function load_all()
   local db   = get_db()
-  local sql  = ("SELECT text, vec FROM %s LIMIT %d")
+  local sql  = ("SELECT text, vec AS blob")
                  :format(cfg.dbTable, cfg.sqlLimit)
   local rows = db:eval(sql) or {}
   if rows == true then rows = {} end
