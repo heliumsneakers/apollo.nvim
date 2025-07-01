@@ -72,7 +72,7 @@ local function load_all()
 
   local texts, hexblobs = {}, {}
   for _, r in ipairs(rows) do
-    texts[#texts+1]    = r.text
+    texts[#texts+1]     = r.text
     hexblobs[#hexblobs+1] = r.hexvec
   end
   return texts, hexblobs
@@ -93,7 +93,7 @@ local function retrieve(query)
 
   local scored = {}
   for i, hexstr in ipairs(hexblobs) do
-    if #hexstr == dim * 2 then
+    if #hexstr == dim * 8 then
       -- hex → raw bytes
       local raw = hexstr:gsub('..', function(cc)
         return string.char(tonumber(cc, 16))
