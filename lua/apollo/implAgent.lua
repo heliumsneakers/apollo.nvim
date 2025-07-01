@@ -21,7 +21,7 @@ local cfg = {
 -- figure out our plugin root so we can load the .dylib in “lib/”
 local this_file = debug.getinfo(1, 'S').source:sub(2)
 local root_dir  = fn.fnamemodify(this_file, ':p:h:h:h')
-local lib_path  = root_dir .. '../lib/cosine_neon.dylib'
+local lib_path  = root_dir .. '/lib/cosine_neon.dylib'
 
 ffi.cdef[[
   void f32_cosine_distance_neon(
