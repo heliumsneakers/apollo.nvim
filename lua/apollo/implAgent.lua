@@ -14,7 +14,7 @@ local cfg = {
   chatEndpoint = 'http://127.0.0.1:8080/v1/chat/completions',
   dbTable      = 'lsp_chunks',   -- matches ragIndexer.lua
   topK         = 12,
-  sqlLimit     = 200,            -- pull at most 200 candidates per query
+  sqlLimit     = 5000,            -- pull at most 200 candidates per query
 }
 
 local function db_path()
