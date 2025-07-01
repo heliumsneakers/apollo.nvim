@@ -2,10 +2,23 @@
 local sqlite  = require('sqlite')
 local scan    = require('plenary.scandir')
 local ftd     = require('plenary.filetype')
+local ffi     = require('ffi')
 local ts      = vim.treesitter
 local api,fn  = vim.api, vim.fn
 local hash    = fn.sha256
 local encode  = fn.json_encode
+
+ffi.cdef[[
+  float *malloc(size_t size);
+  void free(void *ptr);
+]]
+local function pack_floats(tbl)
+  local n    = #tbl
+  -- allocate a C array of n floats, initialized from tbl
+  local buf  = ffi.new("float[?]", n, tbl)
+  -- convert to Lua string (binary blob) of length n*4
+  return ffi.string(buf, n * 4)
+end
 
 --------------------------------------------------------------------- cfg --
 local cfg = {
@@ -86,33 +99,30 @@ local function open_db()
       start_ln INT,
       end_ln   INT,
       text     TEXT,
-      vec_json TEXT
+      vec      BLOB
     );
   ]]):format(cfg.tableName))
   return DB
 end
 
 local function row_exists(db, id)
-  -- sqlite.lua returns a boolean when zero-rows; otherwise it is a table.
   local r = db:eval('SELECT 1 FROM '..cfg.tableName..' WHERE id=? LIMIT 1', id)
   return type(r) == 'table' and r[1] ~= nil
 end
 
 local function insert_row(db, meta, body, vec)
   local id = hash(meta.file .. meta.start_ln .. meta.end_ln .. body)
-  if row_exists(db, id) then          -- idempotent
-    return id
-  end
+  if row_exists(db, id) then return id end
 
-  db:insert(cfg.tableName, {          -- one *table* → all params bound
-    id         = id,
-    parent     = meta.parent or '',
-    file       = meta.file,
-    lang       = meta.lang,
-    start_ln   = meta.start_ln,
-    end_ln     = meta.end_ln,
-    text       = body,
-    vec_json   = encode(vec),
+  db:insert(cfg.tableName, {
+    id       = id,
+    parent   = meta.parent  or '',
+    file     = meta.file,
+    lang     = meta.lang,
+    start_ln = meta.start_ln,
+    end_ln   = meta.end_ln,
+    text     = body,
+    vec      = pack_floats(vec),
   })
   return id
 end

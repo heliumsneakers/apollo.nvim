@@ -75,85 +75,55 @@ local function cosine(a, b)
   return tonumber(out[0])
 end
 
--- ── load & pre-filter corpus via SQL ────────────────────────────────────
+-- load & pre-filter corpus via SQL, now returning raw float32 BLOBs
 local function load_all()
   local db   = get_db()
-  local sql  = ("SELECT text, vec_json AS vec FROM %s LIMIT %d")
+  local sql  = ("SELECT text, vec FROM %s LIMIT %d")
                  :format(cfg.dbTable, cfg.sqlLimit)
-  local rows = db:eval(sql) or {}        -- sqlite.lua returns {} | true
+  local rows = db:eval(sql) or {}
   if rows == true then rows = {} end
 
-  local vecs, texts = {}, {}
+  local texts, blobs = {}, {}
   for _, r in ipairs(rows) do
-    local v = fn.json_decode(r.vec)
-    if type(v) == "table" then
-      vecs[#vecs+1]  = v
-      texts[#texts+1] = r.text
-    end
+    texts[#texts+1] = r.text
+    blobs[#blobs+1] = r.vec   -- r.vec is a Lua string of binary float32s
   end
-  return vecs, texts
+  return texts, blobs
 end
 
+-- brute-force cosine search using raw BLOBs + NEON kernel
 local function retrieve(query)
-  ----------------------------------------------------------------
-  -- 1. tokenise query once (for optional keyword boosts)
-  ----------------------------------------------------------------
-  local kw, total = {}, 0
-  for w in query:lower():gmatch('%w+') do
-    if #w > 2 and not kw[w] then
-      kw[w] = true
-      total = total + 1
-    end
-  end
+  -- 1) load everything
+  local texts, blobs = load_all()
+  if #texts == 0 then return {} end
 
-  ----------------------------------------------------------------
-  -- 2. load ENTIRE corpus (just a LIMIT) & embed the query
-  ----------------------------------------------------------------
-  local vecs, texts = load_all()
-  if #vecs == 0 then return {} end
-
-  vim.notify(("Embedding query: %q"):format(query), vim.log.levels.DEBUG)
+  -- 2) embed the query to get a Lua table of floats
   local qv = embed(query)
-  vim.notify(("Query embedding length: %d"):format(#qv), vim.log.levels.DEBUG)
+  local n  = #qv
+  -- pack query into a C float array once
+  local q_c = ffi.new("float[?]", n, qv)
 
-  ----------------------------------------------------------------
-  -- 3. score each snippet
-  ----------------------------------------------------------------
+  -- 3) compute cosine similarity against each stored vector
   local scored = {}
-  for i, v in ipairs(vecs) do
-    local txt = texts[i]:lower()
+  for i, blob in ipairs(blobs) do
+    -- ensure blob length matches
+    if #blob == n * 4 then
+      local y_ptr = ffi.cast("const float *", blob)
+      local out   = ffi.new("double[1]")
 
-    -- keyword / path boosts
-    local hits = 0
-    for k in pairs(kw) do
-      if txt:find(k, 1, true) then hits = hits + 1 end
+      neon.f32_cosine_distance_neon(q_c, y_ptr, out, n)
+      scored[#scored+1] = { idx = i, score = tonumber(out[0]) }
     end
-    local cover = (total > 0) and math.max(0.15, hits / total) or 1
-
-    local path  = txt:match('^///%s*([^\n]+)') or ''
-    local path_hit = 0
-    for k in pairs(kw) do
-      if path:find(k, 1, true) then path_hit = 1; break end
-    end
-
-    -- compute cosine and log it
-    local c = cosine(qv, v)
-    vim.notify(("cosine[%d]=%.6f"):format(i, c), vim.log.levels.DEBUG)
-
-    local score = c * (1 + 0.2 * path_hit)
-    scored[#scored+1] = { idx = i, score = score }
   end
 
+  -- 4) sort descending & take topK
   table.sort(scored, function(a, b) return a.score > b.score end)
-
-  ----------------------------------------------------------------
-  -- 4. top-K
-  ----------------------------------------------------------------
-  local out = {}
-  for i = 1, math.min(cfg.topK, #scored) do
-    out[#out+1] = texts[scored[i].idx]
+  local results = {}
+  for j = 1, math.min(cfg.topK, #scored) do
+    results[#results+1] = texts[scored[j].idx]
   end
-  return out
+
+  return results
 end
 
 local function _flatten(buf)
