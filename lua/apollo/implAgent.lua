@@ -80,7 +80,14 @@ end
 
 -- brute-force cosine search using raw BLOBs + NEON kernel
 local function retrieve(query)
-  -- 1) tokenize query for keyword matches
+  -- 1) load DB rows
+  local files, texts, hexblobs = load_all()
+  if #texts == 0 then
+    vim.notify("[RAG WARN] no embeddings found in DB", vim.log.levels.WARN)
+    return {}
+  end
+
+  -- 2) tokenize query for keywords
   local kw, total = {}, 0
   for w in query:lower():gmatch("%w+") do
     if #w > 2 and not kw[w] then
@@ -89,49 +96,46 @@ local function retrieve(query)
     end
   end
 
-  -- 2) load DB rows
-  local files, texts, hexblobs = load_all()
-  if #texts == 0 then
-    vim.notify("[RAG WARN] no embeddings found in DB", vim.log.levels.WARN)
-    return {}
+  -- 3) build candidate list via substring match on text or file
+  local candidates = {}
+  for i, txt in ipairs(texts) do
+    local t = txt:lower()
+    local f = files[i]:lower()
+    for w in pairs(kw) do
+      if t:find(w, 1, true) or f:find(w, 1, true) then
+        table.insert(candidates, i)
+        break
+      end
+    end
+  end
+  -- if no keyword hits, fall back to all
+  if #candidates == 0 then
+    for i = 1, #texts do
+      table.insert(candidates, i)
+    end
   end
 
-  -- 3) embed query → C float[]
+  -- 4) embed the query → C float[]
   local qv  = embed(query)
   local dim = #qv
   local q_c = ffi.new("float[?]", dim, qv)
 
-  -- expected hex length = raw_bytes*2 = dim*4*2
-  local expected_hex_len = dim * 8
+  -- expected hex length for raw blob
+  local expected_hex_len = dim * 4 * 2
 
-  -- 4) score each snippet
+  -- 5) cosine-score each candidate
   local scored = {}
-  for i, hexstr in ipairs(hexblobs) do
+  for _, i in ipairs(candidates) do
+    local hexstr = hexblobs[i]
     if #hexstr == expected_hex_len then
-      -- decode hex → raw bytes → float*
+      -- decode hex → raw bytes
       local raw = hexstr:gsub('..', function(cc)
         return string.char(tonumber(cc, 16))
       end)
       local y_ptr = ffi.cast("const float *", raw)
-
-      -- cosine similarity
-      local out = ffi.new("double[1]")
+      local out   = ffi.new("double[1]")
       neon.f32_cosine_distance_neon(q_c, y_ptr, out, dim)
-      local sim = tonumber(out[0])
-
-      -- keyword/path/file boosts
-      local hits = 0
-      local fl = files[i]:lower()
-      local tx = texts[i]:lower()
-      for w in pairs(kw) do
-        if tx:find(w, 1, true) or fl:find(w, 1, true) then
-          hits = hits + 1
-        end
-      end
-      local boost = (total > 0) and (hits / total) or 0
-      local score = sim * (1 + boost)
-
-      scored[#scored+1] = { idx = i, score = score }
+      scored[#scored+1] = { idx = i, score = tonumber(out[0]) }
     else
       vim.notify(
         string.format("[RAG WARN] skipping blob[%d]: hex length %d ≠ %d",
@@ -142,7 +146,7 @@ local function retrieve(query)
     end
   end
 
-  -- 5) sort desc & take topK
+  -- 6) sort descending & take top K
   table.sort(scored, function(a,b) return a.score > b.score end)
   local results = {}
   for j = 1, math.min(cfg.topK, #scored) do
@@ -151,7 +155,6 @@ local function retrieve(query)
 
   return results
 end
-
 local function _flatten(buf)
   if not api.nvim_buf_is_valid(buf) then return end
   local l = api.nvim_buf_get_lines(buf, 0, -1, false)
