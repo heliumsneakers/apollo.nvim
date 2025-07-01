@@ -3,6 +3,7 @@ local M = {}
 
 local api, fn = vim.api, vim.fn
 local sqlite  = require('sqlite')
+local ffi     = require('ffi')
 
 local UI  = { resp_buf=nil, resp_win=nil, input_buf=nil, input_win=nil }
 local H   = { history_lines = {}, pending = '' }   -- per-session state
@@ -16,6 +17,21 @@ local cfg = {
   topK         = 6,
   sqlLimit     = 5000,            -- pull at most 200 candidates per query
 }
+
+-- figure out our plugin root so we can load the .dylib in “lib/”
+local this_file = debug.getinfo(1, 'S').source:sub(2)
+local root_dir  = fn.fnamemodify(this_file, ':p:h:h:h')
+local lib_path  = root_dir .. '/lib/cosine_neon.dylib'
+
+ffi.cdef[[
+  void f32_cosine_distance_neon(
+    const float *x,
+    const float *y,
+    double      *result,
+    uint64_t     size
+  );
+]]
+local neon = ffi.load(lib_path)
 
 local function db_path()
   return ('%s/%s_rag.sqlite'):format(fn.stdpath('data'), cfg.projectName)
@@ -46,15 +62,17 @@ local function embed(text)
   return res.data[1].embedding
 end
 
--- THIS is the meat of semantic search. Maybe find a way to SIMD this with a kernel written in C. 
-local function cosine(a,b)
-  local dot, na, nb = 0,0,0
-  for i=1,#a do
-    dot = dot + a[i]*b[i]
-    na  = na  + a[i]*a[i]
-    nb  = nb  + b[i]*b[i]
-  end
-  return dot / (math.sqrt(na)*math.sqrt(nb) + 1e-8)
+-- SIMD-accelerated cosine distance via our NEON C kernel
+local function cosine(a, b)
+  assert(#a == #b, "vector length mismatch")
+  local n   = #a
+  -- copy Lua tables into C float buffers
+  local x_c = ffi.new("float[?]", n, a)
+  local y_c = ffi.new("float[?]", n, b)
+  local out = ffi.new("double[1]")
+
+  neon.f32_cosine_distance_neon(x_c, y_c, out, n)
+  return tonumber(out[0])
 end
 
 -- ── load & pre-filter corpus via SQL ────────────────────────────────────
@@ -76,7 +94,6 @@ local function load_all()
   return vecs, texts
 end
 
--- ── hybrid retriever ─────────────────────────────────────────────────────
 local function retrieve(query)
   ----------------------------------------------------------------
   -- 1. tokenise query once (for optional keyword boosts)
@@ -94,17 +111,19 @@ local function retrieve(query)
   ----------------------------------------------------------------
   local vecs, texts = load_all()
   if #vecs == 0 then return {} end
+
+  vim.notify(("Embedding query: %q"):format(query), vim.log.levels.DEBUG)
   local qv = embed(query)
+  vim.notify(("Query embedding length: %d"):format(#qv), vim.log.levels.DEBUG)
 
   ----------------------------------------------------------------
   -- 3. score each snippet
   ----------------------------------------------------------------
   local scored = {}
   for i, v in ipairs(vecs) do
-    local txt   = texts[i]:lower()
-    --------------------------------------------------------------
-    -- optional keyword / path boosts (do NOT discard on zero hits)
-    --------------------------------------------------------------
+    local txt = texts[i]:lower()
+
+    -- keyword / path boosts
     local hits = 0
     for k in pairs(kw) do
       if txt:find(k, 1, true) then hits = hits + 1 end
@@ -117,10 +136,14 @@ local function retrieve(query)
       if path:find(k, 1, true) then path_hit = 1; break end
     end
 
-    -- Add cover variable cosine(x) * cover * (norm) if missing too much
-    local score = cosine(qv, v) * (1 + 0.2 * path_hit)
+    -- compute cosine and log it
+    local c = cosine(qv, v)
+    vim.notify(("cosine[%d]=%.6f"):format(i, c), vim.log.levels.DEBUG)
+
+    local score = c * (1 + 0.2 * path_hit)
     scored[#scored+1] = { idx = i, score = score }
   end
+
   table.sort(scored, function(a, b) return a.score > b.score end)
 
   ----------------------------------------------------------------
