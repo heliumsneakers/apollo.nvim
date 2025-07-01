@@ -13,7 +13,7 @@ local cfg = {
   embedEndpoint= 'http://127.0.0.1:8080/v1/embeddings',
   chatEndpoint = 'http://127.0.0.1:8080/v1/chat/completions',
   dbTable      = 'lsp_chunks',   -- matches ragIndexer.lua
-  topK         = 12,
+  topK         = 6,
   sqlLimit     = 5000,            -- pull at most 200 candidates per query
 }
 
@@ -61,7 +61,7 @@ end
 local function load_all()
   local db   = get_db()
   local sql  = ("SELECT text, vec_json AS vec FROM %s LIMIT %d")
-    :format(cfg.dbTable, cfg.sqlLimit)
+                 :format(cfg.dbTable, cfg.sqlLimit)
   local rows = db:eval(sql) or {}        -- sqlite.lua returns {} | true
   if rows == true then rows = {} end
 
@@ -101,9 +101,28 @@ local function retrieve(query)
   ----------------------------------------------------------------
   local scored = {}
   for i, v in ipairs(vecs) do
-    scored[#scored+1] = { idx = i, score = cosine(qv, v) }
+    local txt   = texts[i]:lower()
+    --------------------------------------------------------------
+    -- optional keyword / path boosts (do NOT discard on zero hits)
+    --------------------------------------------------------------
+    local hits = 0
+    for k in pairs(kw) do
+      if txt:find(k, 1, true) then hits = hits + 1 end
+    end
+    local cover = (total > 0) and math.max(0.15, hits / total) or 1
+
+    local path  = txt:match('^///%s*([^\n]+)') or ''
+    local path_hit = 0
+    for k in pairs(kw) do
+      if path:find(k, 1, true) then path_hit = 1; break end
+    end
+
+    -- Add cover variable cosine(x) * cover * (norm) if missing too much
+    local score = cosine(qv, v) * (1 + 0.2 * path_hit)
+    scored[#scored+1] = { idx = i, score = score }
   end
   table.sort(scored, function(a, b) return a.score > b.score end)
+
   ----------------------------------------------------------------
   -- 4. top-K
   ----------------------------------------------------------------
@@ -174,50 +193,50 @@ local function _stream(prompt)
       messages = { { role = 'user', content = prompt } },
     })
   }, {
-      stdout_buffered = false,
-      on_stdout = function(_, data)
-        for _, raw in ipairs(data or {}) do
-          if not raw:match('^data: ') then goto continue end
-          local js = raw:sub(7)
+    stdout_buffered = false,
+    on_stdout = function(_, data)
+      for _, raw in ipairs(data or {}) do
+        if not raw:match('^data: ') then goto continue end
+        local js = raw:sub(7)
 
-          -- ── stream finished ─────────────────────────────────────────────
-          if js == '[DONE]' then
-            if #H.pending > 0 then
-              api.nvim_buf_set_lines(UI.resp_buf, -1, -1, false, { H.pending })
-              vim.list_extend(H.history_lines, { H.pending })
-              H.pending = ''
-            end
-            api.nvim_buf_set_option(UI.resp_buf, 'modifiable', false)
-            return
+        -- ── stream finished ─────────────────────────────────────────────
+        if js == '[DONE]' then
+          if #H.pending > 0 then
+            api.nvim_buf_set_lines(UI.resp_buf, -1, -1, false, { H.pending })
+            vim.list_extend(H.history_lines, { H.pending })
+            H.pending = ''
           end
-
-          -- ── normal chunk ───────────────────────────────────────────────
-          local ok, chunk = pcall(fn.json_decode, js)
-          if ok and chunk.choices then
-            local delta = chunk.choices[1].delta.content      -- may be nil | userdata
-            if type(delta) ~= 'string' then
-              delta = ''                                      -- ignore non-text
-            end
-
-            if #delta > 0 then
-              H.pending = H.pending .. delta
-
-              -- flush complete lines
-              local flush = {}
-              for line in H.pending:gmatch('(.-)\n') do
-                flush[#flush + 1] = line
-              end
-              if #flush > 0 then
-                api.nvim_buf_set_lines(UI.resp_buf, -1, -1, false, flush)
-                vim.list_extend(H.history_lines, flush)
-                H.pending = H.pending:match('.*\n(.*)') or ''
-              end
-            end
-          end
-          ::continue::
+          api.nvim_buf_set_option(UI.resp_buf, 'modifiable', false)
+          return
         end
-      end,
-    })
+
+        -- ── normal chunk ───────────────────────────────────────────────
+        local ok, chunk = pcall(fn.json_decode, js)
+        if ok and chunk.choices then
+          local delta = chunk.choices[1].delta.content      -- may be nil | userdata
+          if type(delta) ~= 'string' then
+            delta = ''                                      -- ignore non-text
+          end
+
+          if #delta > 0 then
+            H.pending = H.pending .. delta
+
+            -- flush complete lines
+            local flush = {}
+            for line in H.pending:gmatch('(.-)\n') do
+              flush[#flush + 1] = line
+            end
+            if #flush > 0 then
+              api.nvim_buf_set_lines(UI.resp_buf, -1, -1, false, flush)
+              vim.list_extend(H.history_lines, flush)
+              H.pending = H.pending:match('.*\n(.*)') or ''
+            end
+          end
+        end
+        ::continue::
+      end
+    end,
+  })
 end
 
 -- ── minimal UI layer (same as before) ────────────────────────────────────
@@ -241,7 +260,7 @@ local function _open_ui()
 
   api.nvim_buf_set_option(UI.resp_buf,'modifiable',true)
   local init = (#H.history_lines==0) and _center(_splash(),width)
-  or  H.history_lines
+                                   or  H.history_lines
   api.nvim_buf_set_lines(UI.resp_buf,0,-1,false,init)
   api.nvim_buf_set_option(UI.resp_buf,'modifiable',false)
 
