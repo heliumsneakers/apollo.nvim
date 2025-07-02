@@ -17,7 +17,7 @@ local H  = { history_lines = {}, pending = '' }
 
 -- ── load C index library ─────────────────────────────────────────────────
 local this_file   = debug.getinfo(1,'S').source:sub(2)
-local plugin_root = fn.fnamemodify(this_file, ':p:h:h')
+local plugin_root = fn.fnamemodify(this_file, ':p:h:h:h')
 local lib_path    = plugin_root .. '/lib/chunks.dylib'
 local chunks_c    = ffi.load(lib_path)
 
