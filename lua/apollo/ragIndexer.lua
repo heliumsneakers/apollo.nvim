@@ -4,6 +4,8 @@
 local scan   = require('plenary.scandir')
 local ftd    = require('plenary.filetype')
 local ts     = require('vim.treesitter')
+local bit = require('bit')
+local ffi = require('ffi')
 local api, fn= vim.api, vim.fn
 local pack   = string.pack
 local encode = fn.json_encode
@@ -22,6 +24,24 @@ local out_path = fn.stdpath('data')..'/'..cfg.projectName..'_chunks.bin'
 ---------------------------------------------------------------------
 -- Embedding helper
 ---------------------------------------------------------------------
+
+-- pack a 32-bit unsigned little-endian
+local function pack_u32(n)
+  return string.char(
+    bit.band(n, 0xFF),
+    bit.band(bit.rshift(n, 8), 0xFF),
+    bit.band(bit.rshift(n, 16), 0xFF),
+    bit.band(bit.rshift(n, 24), 0xFF)
+  )
+end
+
+-- reuse ffi to pack float32 array
+local function pack_floats(tbl)
+  local n   = #tbl
+  local buf = ffi.new("float[?]", n, tbl)
+  return ffi.string(buf, n * 4)
+end
+
 local function system_json(cmd)
   local out = fn.system(cmd)
   if vim.v.shell_error ~= 0 then error(out) end
@@ -124,21 +144,35 @@ local function collect_chunk(meta, lines)
 end
 
 local function write_chunks_bin()
-  local fh = io.open(out_path,'wb')
-  assert(fh, 'Could not open '..out_path)
-  fh:write(pack('<I4', #chunks))
-  for _,c in ipairs(chunks) do
-    for _,f in ipairs({ 'id','parent','file','ext' }) do
-      fh:write(pack('<I4', #(c[f])), c[f])
+  local fh = io.open(out_path, 'wb')
+  assert(fh, 'Could not open ' .. out_path)
+
+  -- header: number of chunks
+  fh:write(pack_u32(#chunks))
+
+  for _, c in ipairs(chunks) do
+    -- length-prefixed strings
+    for _, field in ipairs({ 'id','parent','file','ext' }) do
+      local s = c[field]
+      fh:write(pack_u32(#s), s)
     end
-    fh:write(pack('<I4I4', c.start_ln, c.end_ln))
-    fh:write(pack('<I4', #c.text), c.text)
+
+    -- start_ln, end_ln
+    fh:write(pack_u32(c.start_ln), pack_u32(c.end_ln))
+
+    -- text
+    fh:write(pack_u32(#c.text), c.text)
+
+    -- dimension
     local dim = #c.vec
-    fh:write(pack('<I4', dim))
-    for i=1,dim do fh:write(pack('<f', c.vec[i])) end
+    fh:write(pack_u32(dim))
+
+    -- raw float32 values
+    fh:write(pack_floats(c.vec))
   end
+
   fh:close()
-  vim.notify(('[RAG] wrote %d chunks → %s'):format(#chunks,out_path),
+  vim.notify(('[RAG] wrote %d chunks → %s'):format(#chunks, out_path),
              vim.log.levels.INFO)
 end
 
