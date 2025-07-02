@@ -1,7 +1,7 @@
 # apollo.nvim
 [feynman.webm](https://github.com/user-attachments/assets/addb8fbc-c775-4e9b-aeee-e3fa09e0a838)
 
-Excerpt: Computer Science lecture by Richard Feynman from September 26th, 1985.
+*Excerpt: Computer Science lecture by Richard Feynman from September 26th, 1985.*
 
 **Not** a vibe coding agent suite.
 
