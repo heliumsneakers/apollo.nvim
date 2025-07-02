@@ -1,5 +1,7 @@
 # apollo.nvim
-Not a vibe coding agent suite.
+[feynman.webm](https://github.com/user-attachments/assets/addb8fbc-c775-4e9b-aeee-e3fa09e0a838)
+
+**Not** a vibe coding agent suite.
 
 *apollo.nvim* is a project that aims to understand your workspace and answer questions, offer changes, document and comment on implementation specs.
 
