@@ -1,3 +1,4 @@
+// cosine_neon.c
 #include <stdint.h>
 #include <math.h>
 #include <arm_neon.h>
@@ -77,4 +78,41 @@ void f32_dot_product_neon(
     }
 
     *result = (double)sum;
+}
+
+// normalize with vectorized sum‐of‐squares and reciprocal‐sqrt estimate
+void norm_neon(float *v, uint32_t d) {
+
+    // Vectorized sum-of-squares
+    float32x4_t sum4 = vmovq_n_f32(0.0f);
+    uint32_t i = 0;
+    for (; i + 4 <= d; i += 4) {
+        float32x4_t x = vld1q_f32(v + i);
+        sum4 = vmlaq_f32(sum4, x, x);
+    }
+    float sum = vaddvq_f32(sum4);
+    for (; i < d; i++) {
+        sum += v[i] * v[i];
+    }
+
+    // Reciprocal‐sqrt estimate + two Newton‐Raphson refinements
+    // Use NEON vrsqrteq/vrsqrtsq on a 4‐lane vector, then extract lane 0
+    float32x4_t s4 = vdupq_n_f32(sum);
+    float32x4_t y  = vrsqrteq_f32(s4);
+    // one iteration: y = y * (3 - sum*y*y) * 0.5
+    y = vmulq_f32(y, vrsqrtsq_f32(vmulq_f32(s4, vmulq_f32(y, y)), y));
+    // second iteration
+    y = vmulq_f32(y, vrsqrtsq_f32(vmulq_f32(s4, vmulq_f32(y, y)), y));
+    float inv_norm = vgetq_lane_f32(y, 0);
+
+    // Vectorized scaling by inv_norm
+    float32x4_t scale4 = vdupq_n_f32(inv_norm);
+    i = 0;
+    for (; i + 4 <= d; i += 4) {
+        float32x4_t x = vld1q_f32(v + i);
+        vst1q_f32(v + i, vmulq_f32(x, scale4));
+    }
+    for (; i < d; i++) {
+        v[i] *= inv_norm;
+    }
 }
