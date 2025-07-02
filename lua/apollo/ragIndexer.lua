@@ -7,7 +7,6 @@ local ts     = require('vim.treesitter')
 local bit = require('bit')
 local ffi = require('ffi')
 local api, fn= vim.api, vim.fn
-local pack   = string.pack
 local encode = fn.json_encode
 
 ---------------------------------------------------------------------
