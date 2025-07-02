@@ -1,51 +1,48 @@
 -- lua/apollo/impl-agent.lua  –  RAG Q-and-A assistant (json-vec) with SQL prefilter
-local M = {}
-
+local M    = {}
 local api, fn = vim.api, vim.fn
-local sqlite  = require('sqlite')
-local ffi     = require('ffi')
-
-local UI  = { resp_buf=nil, resp_win=nil, input_buf=nil, input_win=nil }
-local H   = { history_lines = {}, pending = '' }   -- per-session state
+local ffi  = require('ffi')
 
 -- ── configuration ────────────────────────────────────────────────────────
 local cfg = {
   projectName  = fn.fnamemodify(fn.getcwd(), ':t'),
   embedEndpoint= 'http://127.0.0.1:8080/v1/embeddings',
   chatEndpoint = 'http://127.0.0.1:8080/v1/chat/completions',
-  dbTable      = 'lsp_chunks',   -- matches ragIndexer.lua
   topK         = 6,
-  sqlLimit     = 5000,            -- pull at most 200 candidates per query
 }
 
--- figure out our plugin root so we can load the .dylib in “lib/”
-local this_file = debug.getinfo(1, 'S').source:sub(2)
-local root_dir  = fn.fnamemodify(this_file, ':p:h:h:h')
-local lib_path  = root_dir .. '/lib/chunks.dylib'
+-- ── UI state ─────────────────────────────────────────────────────────────
+local UI = { resp_buf=nil, resp_win=nil, input_buf=nil, input_win=nil }
+local H  = { history_lines = {}, pending = '' }
+
+-- ── load C index library ─────────────────────────────────────────────────
+local this_file   = debug.getinfo(1,'S').source:sub(2)
+local plugin_root = fn.fnamemodify(this_file, ':p:h:h')
+local lib_path    = plugin_root .. '/lib/chunks.dylib'
+local chunks_c    = ffi.load(lib_path)
 
 ffi.cdef[[
-  void f32_cosine_distance_neon(
-    const float *x,
-    const float *y,
-    double      *result,
-    uint64_t     size
+  typedef struct ChunkIndex ChunkIndex;
+  ChunkIndex* ci_load(const char *filename);
+  void         ci_free(ChunkIndex *ci);
+  uint32_t ci_search(
+    ChunkIndex *ci,
+    const float *qemb,
+    uint32_t     dim,
+    uint32_t     K,
+    uint32_t    *out_idxs,
+    double      *out_scores
   );
+  const char* ci_get_file (ChunkIndex*, uint32_t idx);
+  const char* ci_get_text (ChunkIndex*, uint32_t idx);
 ]]
-local neon = ffi.load(lib_path)
 
-local function db_path()
-  return ('%s/%s_rag.sqlite'):format(fn.stdpath('data'), cfg.projectName)
-end
+-- ── load binary index ─────────────────────────────────────────────────────
+local bin_path = fn.stdpath('data') .. '/' .. cfg.projectName .. '_chunks.bin'
+local ci = chunks_c.ci_load(bin_path)
+assert(ci ~= nil, 'Failed to load chunks.bin at '..bin_path)
 
--- ── persistent DB handle ─────────────────────────────────────────────────
-local DB
-local function get_db()
-  if DB and DB:isopen() then return DB end
-  DB = sqlite{ uri=db_path(), create=false, opts={ keep_open=true } }
-  return DB
-end
-
--- ── misc helpers ─────────────────────────────────────────────────────────
+-- ── embedding helper ──────────────────────────────────────────────────────
 local function system_json(cmd)
   local out = fn.system(cmd)
   if vim.v.shell_error ~= 0 then error(out) end
@@ -62,106 +59,42 @@ local function embed(text)
   return res.data[1].embedding
 end
 
--- load & pre-filter corpus via SQL, now returning raw float32 BLOBs
-local function load_all()
-  local db  = get_db()
-  local sql = ("SELECT file, text, hex(vec) AS hexvec FROM %s"):format(cfg.dbTable)
-  local rows = db:eval(sql) or {}
-  if rows == true then rows = {} end
-
-  local files, texts, hexblobs = {}, {}, {}
-  for _, r in ipairs(rows) do
-    files[#files+1]    = r.file
-    texts[#texts+1]    = r.text
-    hexblobs[#hexblobs+1] = r.hexvec
-  end
-  return files, texts, hexblobs
-end
-
--- brute-force cosine search using raw BLOBs + NEON kernel
+-- ── retrieve via C index ─────────────────────────────────────────────────
 local function retrieve(query)
-  -- 1) load DB rows
-  local files, texts, hexblobs = load_all()
-  if #texts == 0 then
-    vim.notify("[RAG WARN] no embeddings found in DB", vim.log.levels.WARN)
-    return {}
-  end
-
-  -- 2) tokenize query for keywords
-  local kw, total = {}, 0
-  for w in query:lower():gmatch("%w+") do
-    if #w > 2 and not kw[w] then
-      kw[w] = true
-      total = total + 1
-    end
-  end
-
-  -- 3) build candidate list via substring match on text or file
-  local candidates = {}
-  for i, txt in ipairs(texts) do
-    local t = txt:lower()
-    local f = files[i]:lower()
-    for w in pairs(kw) do
-      if t:find(w, 1, true) or f:find(w, 1, true) then
-        table.insert(candidates, i)
-        break
-      end
-    end
-  end
-  -- if no keyword hits, fall back to all
-  if #candidates == 0 then
-    for i = 1, #texts do
-      table.insert(candidates, i)
-    end
-  end
-
-  -- 4) embed the query → C float[]
+  -- embed query → C float array
   local qv  = embed(query)
   local dim = #qv
   local q_c = ffi.new("float[?]", dim, qv)
 
-  -- expected hex length for raw blob
-  local expected_hex_len = dim * 4 * 2
+  -- prepare output buffers
+  local K     = cfg.topK
+  local out_i = ffi.new("uint32_t[?]", K)
+  local out_s = ffi.new("double[?]",   K)
 
-  -- 5) cosine-score each candidate
-  local scored = {}
-  for _, i in ipairs(candidates) do
-    local hexstr = hexblobs[i]
-    if #hexstr == expected_hex_len then
-      -- decode hex → raw bytes
-      local raw = hexstr:gsub('..', function(cc)
-        return string.char(tonumber(cc, 16))
-      end)
-      local y_ptr = ffi.cast("const float *", raw)
-      local out   = ffi.new("double[1]")
-      neon.f32_cosine_distance_neon(q_c, y_ptr, out, dim)
-      scored[#scored+1] = { idx = i, score = tonumber(out[0]) }
-    else
-      vim.notify(
-        string.format("[RAG WARN] skipping blob[%d]: hex length %d ≠ %d",
-          i, #hexstr, expected_hex_len
-        ),
-        vim.log.levels.WARN
-      )
-    end
-  end
+  -- call C search
+  local cnt = tonumber(chunks_c.ci_search(ci, q_c, dim, K, out_i, out_s))
 
-  -- 6) sort descending & take top K
-  table.sort(scored, function(a,b) return a.score > b.score end)
+  -- collect results
   local results = {}
-  for j = 1, math.min(cfg.topK, #scored) do
-    results[#results+1] = texts[scored[j].idx]
+  for i = 0, cnt-1 do
+    local txt   = ffi.string(chunks_c.ci_get_text(ci, out_i[i]))
+    results[#results+1] = txt
   end
-
   return results
 end
+
+-- ── cleanup on exit ───────────────────────────────────────────────────────
+api.nvim_create_autocmd('VimLeavePre', {
+  callback = function() chunks_c.ci_free(ci) end,
+})
+
 local function _flatten(buf)
   if not api.nvim_buf_is_valid(buf) then return end
   local l = api.nvim_buf_get_lines(buf, 0, -1, false)
   if #l > 1 then
     local j = table.concat(l, ' '):gsub('%s+$','')
     api.nvim_buf_set_lines(buf, 0, -1, false, { j })
-    api.nvim_win_set_cursor(0, { 1, #j })
+    api.nvim_win_set_cursor(0, {1, #j})
   end
 end
 
