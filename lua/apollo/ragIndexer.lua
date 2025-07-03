@@ -175,117 +175,129 @@ local function write_chunks_bin()
              vim.log.levels.INFO)
 end
 
-local function embed_project(roots)
-  chunks = {}
+
+local M = {}
+---------------------------------------------------------------------
+-- File-picker UI state
+---------------------------------------------------------------------
+local picker = {
+  stack = { fn.getcwd() },    -- navigation stack of dirs
+  mark  = {},                 -- selected files
+  items = {},                 -- current display items
+}
+local ui_buf, ui_win
+
+local function scan_current()
+  local cwd = picker.stack[#picker.stack]
+  local dirs = scan.scan_dir(cwd, { only_dirs=true, depth=1, respect_gitignore=true })
+  local files = scan.scan_dir(cwd, { hidden=true, depth=1, respect_gitignore=true })
+  -- filter files by LSP types
   local want = {}
   for _,c in pairs(vim.lsp.get_active_clients()) do
     for _,ft in ipairs(c.config.filetypes or {}) do want[ft]=true end
   end
-  if vim.tbl_isempty(want) then
-    return vim.notify('[RAG] no active LSP',vim.log.levels.WARN)
-  end
-
-  local files = scan.scan_dir(fn.getcwd(),{
-    hidden=true, depth=8, respect_gitignore=true,
-  })
-  table.sort(files)
-  for _,path in ipairs(files) do
-    if (not roots) or vim.tbl_contains(roots, vim.fn.fnamemodify(path, ':h')) then
-      local ft = ftd.detect_from_extension(path) or ftd.detect(path,{})
-      if want[ft] then
-        local lines = fn.readfile(path)
-        if #lines>0 then
-          local ranges = cover_whole_file(
-            get_function_ranges(fn.bufadd(path),ft), #lines)
-          for _,r in ipairs(ranges) do
-            collect_chunk({
-              file=path,
-              parent='',
-              start_ln=r.start_ln,
-              end_ln=r.end_ln,
-            }, vim.list_slice(lines,r.start_ln,r.end_ln))
-          end
-        end
-      end
+  local filtered = {}
+  for _,f in ipairs(files) do
+    if fn.isdirectory(f)==0 then
+      local ext = fn.fnamemodify(f,':e')
+      if want[ext] then table.insert(filtered,f) end
     end
   end
-
-  write_chunks_bin()
+  -- sort and merge
+  table.sort(dirs)
+  table.sort(filtered)
+  picker.items = {}
+  for _,d in ipairs(dirs) do table.insert(picker.items, {type='dir', path=d}) end
+  for _,f in ipairs(filtered) do table.insert(picker.items, {type='file', path=f}) end
 end
 
----------------------------------------------------------------------
--- Directory-picker UI
----------------------------------------------------------------------
-local picker = { dirs={}, mark={} }
-local ui_buf, ui_win
-
 local function refresh()
+  scan_current()
   local lines = {}
-  for _,d in ipairs(picker.dirs) do
-    lines[#lines+1] = (picker.mark[d] and '✓ ' or '  ')..d
+  for i,item in ipairs(picker.items) do
+    local prefix = (item.type=='dir' and '📁 ' or (picker.mark[item.path] and '✅ ' or '   '))
+    local label = fn.fnamemodify(item.path, item.type=='dir' and ':t' or ':p:.')
+    lines[i] = prefix .. label
   end
-  lines[#lines+1] = '-- <CR> to build --'
+  lines[#lines+1] = '-- <e> to enter/toggle, <CR> to build, <q> to quit --'
   api.nvim_buf_set_option(ui_buf,'modifiable',true)
   api.nvim_buf_set_lines(ui_buf,0,-1,false,lines)
   api.nvim_buf_set_option(ui_buf,'modifiable',false)
 end
 
-local function toggle()
-  local i = api.nvim_win_get_cursor(0)[1]
-  local d = picker.dirs[i]
-  if d then
-    picker.mark[d] = not picker.mark[d]
+function M._enter_toggle()
+  local row = api.nvim_win_get_cursor(ui_win)[1]
+  local itm = picker.items[row]
+  if not itm then return end
+  if itm.type=='dir' then
+    table.insert(picker.stack, itm.path)
+  else
+    picker.mark[itm.path] = not picker.mark[itm.path]
+  end
+  refresh()
+end
+
+function M._go_up()
+  if #picker.stack > 1 then
+    table.remove(picker.stack)
     refresh()
   end
 end
 
-local function close_ui()
-  if ui_win and api.nvim_win_is_valid(ui_win) then api.nvim_win_close(ui_win,true) end
-  if ui_buf and api.nvim_buf_is_valid(ui_buf) then api.nvim_buf_delete(ui_buf,{force=true}) end
+function M._commit()
+  local sel = {}
+  for path,ok in pairs(picker.mark) do
+    if ok then table.insert(sel,path) end
+  end
+  api.nvim_win_close(ui_win,true)
+  api.nvim_buf_delete(ui_buf,{force=true})
+  ui_buf, ui_win = nil, nil
+  -- embed only selected files
+  M.embed_files(sel)
+end
+
+function M._close_ui()
+  if ui_win then api.nvim_win_close(ui_win,true) end
+  if ui_buf then api.nvim_buf_delete(ui_buf,{force=true}) end
   ui_buf, ui_win = nil, nil
 end
 
-local function commit()
-  local roots = {}
-  for d,sel in pairs(picker.mark) do
-    if sel then roots[#roots+1] = d end
+---------------------------------------------------------------------
+-- Embedding pipeline for selected files
+---------------------------------------------------------------------
+function M.embed_files(files)
+  chunks = {}
+  for _,path in ipairs(files) do
+    local lines = fn.readfile(path)
+    if #lines>0 then
+      local ranges = cover_whole_file(get_function_ranges(fn.bufadd(path), ftd.detect_from_extension(path) or ftd.detect(path,{})), #lines)
+      for _,r in ipairs(ranges) do
+        collect_chunk({ file=path, parent='', start_ln=r.start_ln, end_ln=r.end_ln }, vim.list_slice(lines,r.start_ln,r.end_ln))
+      end
+    end
   end
-  close_ui()
-  embed_project(roots)
+  write_chunks_bin()
 end
 
-api.nvim_create_user_command('ApolloBuildChunksDirs', function()
-  picker.dirs = scan.scan_dir(fn.getcwd(),{only_dirs=true,depth=3,respect_gitignore=true})
-  table.sort(picker.dirs)
-  picker.mark = {}
-  ui_buf = api.nvim_create_buf(false,true)
-  refresh()
-  local h = math.min(#picker.dirs+1, math.floor(vim.o.lines*0.6))
-  local w = math.floor(vim.o.columns*0.45)
-  ui_win = api.nvim_open_win(ui_buf,true,{
-    relative='editor',
-    row=(vim.o.lines-h)/2,
-    col=(vim.o.columns-w)/2,
-    width=w,
-    height=h,
-    style='minimal',
-    border='rounded',
-  })
-  api.nvim_buf_set_keymap(ui_buf,'n','e','<Cmd>lua require"apollo.ragIndexer"._toggle()<CR>',{nowait=true,noremap=true,silent=true})
-  api.nvim_buf_set_keymap(ui_buf,'n','<CR>','<Cmd>lua require"apollo.ragIndexer"._commit()<CR>',{nowait=true,noremap=true,silent=true})
-  api.nvim_buf_set_keymap(ui_buf,'n','q','<Cmd>lua require"apollo.ragIndexer"._close_ui()<CR>',{nowait=true,noremap=true,silent=true})
-end,{})
-
 ---------------------------------------------------------------------
--- Simple project-level cmd
+-- UI command
 ---------------------------------------------------------------------
 api.nvim_create_user_command('ApolloBuildChunks', function()
-  embed_project()
-end,{})
+  picker.stack = { fn.getcwd() }
+  picker.mark  = {}
+  ui_buf = api.nvim_create_buf(false,true)
+  local h = math.min(#picker.stack[1], math.floor(vim.o.lines*0.6))
+  local w = math.floor(vim.o.columns*0.45)
+  ui_win = api.nvim_open_win(ui_buf,true,{
+    relative='editor', row=(vim.o.lines-h)/2, col=(vim.o.columns-w)/2,
+    width=w, height=h, style='minimal', border='rounded',
+  })
+  api.nvim_buf_set_keymap(ui_buf,'n','e','<Cmd>lua require"apollo.ragIndexer"._enter_toggle()<CR>',{nowait=true,noremap=true,silent=true})
+  api.nvim_buf_set_keymap(ui_buf,'n','u','<Cmd>lua require"apollo.ragIndexer"._go_up()<CR>',{nowait=true,noremap=true,silent=true})
+  api.nvim_buf_set_keymap(ui_buf,'n','<CR>','<Cmd>lua require"apollo.ragIndexer"._commit()<CR>',{nowait=true,noremap=true,silent=true})
+  api.nvim_buf_set_keymap(ui_buf,'n','q','<Cmd>lua require"apollo.ragIndexer"._close_ui()<CR>',{nowait=true,noremap=true,silent=true})
+  refresh()
+end, {})
 
--- expose UI fns
-local M = {}
-M._toggle   = toggle
-M._commit   = commit
-M._close_ui = close_ui
 return M
+
