@@ -175,6 +175,15 @@ local function write_chunks_bin()
              vim.log.levels.INFO)
 end
 
+
+local picker = {
+  items  = {},
+  mark   = {},
+  tree   = {},
+  opened = {},
+}
+local ui_buf, ui_win
+
 ---------------------------------------------------------------------
 -- Build tree of items under cwd (recursive)
 ---------------------------------------------------------------------
@@ -216,18 +225,15 @@ end
 local function flatten_tree(nodes, depth, list)
   for _, node_data in pairs(nodes) do
     table.insert(list, { node=node_data, depth=depth })
-    if node_data.type=='dir' then
+    if node_data.type == 'dir' and picker.opened[node_data.path] then
       flatten_tree(node_data.children, depth+1, list)
     end
   end
 end
 
 ---------------------------------------------------------------------
--- Picker UI state & functions
+-- UI state & functions
 ---------------------------------------------------------------------
-local picker = { items = {}, mark = {}, tree = {} }
-local ui_buf, ui_win
-
 local function refresh()
   picker.tree = build_tree(fn.getcwd())
   picker.items = {}
@@ -246,12 +252,21 @@ local function refresh()
 end
 
 local function toggle()
-  local row = api.nvim_win_get_cursor(ui_win)[1]
+  local row   = api.nvim_win_get_cursor(ui_win)[1]
   local entry = picker.items[row]
-  if entry and entry.node.type=='file' then
+  if not entry then return end
+
+  if entry.node.type == 'dir' then
+    -- expand or collapse
+    local p = entry.node.path
+    if picker.opened[p] then picker.opened[p] = nil
+    else picker.opened[p] = true end
+
+  else -- file
     picker.mark[entry.node.path] = not picker.mark[entry.node.path]
-    refresh()
   end
+
+  refresh()
 end
 
 local function commit()
