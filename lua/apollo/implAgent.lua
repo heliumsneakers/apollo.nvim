@@ -8,7 +8,7 @@ local cfg = {
   projectName  = fn.fnamemodify(fn.getcwd(), ':t'),
   embedEndpoint= 'http://127.0.0.1:8080/v1/embeddings',
   chatEndpoint = 'http://127.0.0.1:8080/v1/chat/completions',
-  topK         = 6,
+  topK         = 6, -- number of top ranking results
 }
 
 -- ── UI state ─────────────────────────────────────────────────────────────
@@ -35,6 +35,9 @@ ffi.cdef[[
   );
   const char* ci_get_file (ChunkIndex*, uint32_t idx);
   const char* ci_get_text (ChunkIndex*, uint32_t idx);
+  const char* ci_get_parent (ChunkIndex*, uint32_t idx);
+  uint32_t    ci_get_start  (ChunkIndex*, uint32_t idx);
+  uint32_t    ci_get_end    (ChunkIndex*, uint32_t idx);
 ]]
 
 -- ── load binary index ─────────────────────────────────────────────────────
@@ -148,50 +151,50 @@ local function _stream(prompt)
       messages = { { role = 'user', content = prompt } },
     })
   }, {
-    stdout_buffered = false,
-    on_stdout = function(_, data)
-      for _, raw in ipairs(data or {}) do
-        if not raw:match('^data: ') then goto continue end
-        local js = raw:sub(7)
+      stdout_buffered = false,
+      on_stdout = function(_, data)
+        for _, raw in ipairs(data or {}) do
+          if not raw:match('^data: ') then goto continue end
+          local js = raw:sub(7)
 
-        -- ── stream finished ─────────────────────────────────────────────
-        if js == '[DONE]' then
-          if #H.pending > 0 then
-            api.nvim_buf_set_lines(UI.resp_buf, -1, -1, false, { H.pending })
-            vim.list_extend(H.history_lines, { H.pending })
-            H.pending = ''
-          end
-          api.nvim_buf_set_option(UI.resp_buf, 'modifiable', false)
-          return
-        end
-
-        -- ── normal chunk ───────────────────────────────────────────────
-        local ok, chunk = pcall(fn.json_decode, js)
-        if ok and chunk.choices then
-          local delta = chunk.choices[1].delta.content      -- may be nil | userdata
-          if type(delta) ~= 'string' then
-            delta = ''                                      -- ignore non-text
-          end
-
-          if #delta > 0 then
-            H.pending = H.pending .. delta
-
-            -- flush complete lines
-            local flush = {}
-            for line in H.pending:gmatch('(.-)\n') do
-              flush[#flush + 1] = line
+          -- ── stream finished ─────────────────────────────────────────────
+          if js == '[DONE]' then
+            if #H.pending > 0 then
+              api.nvim_buf_set_lines(UI.resp_buf, -1, -1, false, { H.pending })
+              vim.list_extend(H.history_lines, { H.pending })
+              H.pending = ''
             end
-            if #flush > 0 then
-              api.nvim_buf_set_lines(UI.resp_buf, -1, -1, false, flush)
-              vim.list_extend(H.history_lines, flush)
-              H.pending = H.pending:match('.*\n(.*)') or ''
+            api.nvim_buf_set_option(UI.resp_buf, 'modifiable', false)
+            return
+          end
+
+          -- ── normal chunk ───────────────────────────────────────────────
+          local ok, chunk = pcall(fn.json_decode, js)
+          if ok and chunk.choices then
+            local delta = chunk.choices[1].delta.content      -- may be nil | userdata
+            if type(delta) ~= 'string' then
+              delta = ''                                      -- ignore non-text
+            end
+
+            if #delta > 0 then
+              H.pending = H.pending .. delta
+
+              -- flush complete lines
+              local flush = {}
+              for line in H.pending:gmatch('(.-)\n') do
+                flush[#flush + 1] = line
+              end
+              if #flush > 0 then
+                api.nvim_buf_set_lines(UI.resp_buf, -1, -1, false, flush)
+                vim.list_extend(H.history_lines, flush)
+                H.pending = H.pending:match('.*\n(.*)') or ''
+              end
             end
           end
+          ::continue::
         end
-        ::continue::
-      end
-    end,
-  })
+      end,
+    })
 end
 
 -- ── minimal UI layer (same as before) ────────────────────────────────────
@@ -215,7 +218,7 @@ local function _open_ui()
 
   api.nvim_buf_set_option(UI.resp_buf,'modifiable',true)
   local init = (#H.history_lines==0) and _center(_splash(),width)
-                                   or  H.history_lines
+  or  H.history_lines
   api.nvim_buf_set_lines(UI.resp_buf,0,-1,false,init)
   api.nvim_buf_set_option(UI.resp_buf,'modifiable',false)
 
@@ -245,6 +248,73 @@ local function _open_ui()
   })
 end
 
+--- DEBUGGING ---
+
+-- Live‐search UI state
+local SUI = { res_buf=nil, res_win=nil, inp_buf=nil, inp_win=nil }
+
+local function render_live(results)
+  if not (SUI.res_buf and api.nvim_buf_is_valid(SUI.res_buf)) then return end
+  local lines = {}
+  for i, r in ipairs(results) do
+    table.insert(lines, string.format(
+      "%2d. [%.1f%%] %s:%d–%d  parent=%s",
+      i, r.score, r.file, r.start_ln, r.end_ln, r.parent=="" and "<file>" or r.parent
+    ))
+    for _, ln in ipairs(vim.split(r.text, "\n")) do
+      table.insert(lines, "     " .. ln)
+    end
+    table.insert(lines, "")  -- blank line between hits
+  end
+  api.nvim_buf_set_option(SUI.res_buf,'modifiable',true)
+  api.nvim_buf_set_lines(SUI.res_buf,0,-1,false,lines)
+  api.nvim_buf_set_option(SUI.res_buf,'modifiable',false)
+end
+
+local function _open_live_search()
+  -- results window
+  local h = math.floor(vim.o.lines*0.6)
+  local w = math.floor(vim.o.columns*0.8)
+  SUI.res_buf = api.nvim_create_buf(false,true)
+  api.nvim_buf_set_option(SUI.res_buf,'filetype','markdown')
+  SUI.res_win = api.nvim_open_win(SUI.res_buf,true,{
+    relative='editor', row=1, col=2, width=w, height=h,
+    style='minimal', border='rounded',
+  })
+  api.nvim_win_set_option(SUI.res_win,'wrap',true)
+
+  -- input window
+  local ih = 3
+  SUI.inp_buf = api.nvim_create_buf(false,false)
+  api.nvim_buf_set_option(SUI.inp_buf,'buftype','prompt')
+  SUI.inp_win = api.nvim_open_win(SUI.inp_buf,true,{
+    relative='editor', row=h+2, col=2, width=w, height=ih,
+    style='minimal', border='rounded',
+  })
+  vim.fn.prompt_setprompt(SUI.inp_buf,'Search→ ')
+  api.nvim_command('startinsert')
+
+  -- on every change, re-render
+  api.nvim_create_autocmd({'TextChangedI','TextChangedP'},{
+    buffer=SUI.inp_buf,
+    callback = function()
+      local l = api.nvim_buf_get_lines(SUI.inp_buf,0,-1,false)[1] or ""
+      local q = l:gsub('^Search→%s*','')
+      if #q > 0 then
+        local hits = retrieve_meta(q)
+        render_live(hits)
+      else
+        api.nvim_buf_set_lines(SUI.res_buf,0,-1,false,{})
+      end
+    end,
+  })
+end
+
+function M.live_search()
+  _open_live_search()
+end
+ --- DEBUGGING ---
+
 function M._send()
   local raw = api.nvim_buf_get_lines(UI.input_buf,0,-1,false)
   local query = table.concat(raw,' '):gsub('^→ ','')
@@ -268,5 +338,6 @@ function M.quit() _close(true) end
 function M.setup()
   api.nvim_create_user_command('ApolloAsk', M.open, {})
   api.nvim_create_user_command('ApolloAskQuit', M.quit, {})
+  api.nvim_create_user_command('ApolloLive', M.live_search, {})
 end
 return M
