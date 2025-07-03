@@ -42,8 +42,19 @@ ffi.cdef[[
 
 -- ── load binary index ─────────────────────────────────────────────────────
 local bin_path = fn.stdpath('data') .. '/' .. cfg.projectName .. '_chunks.bin'
-local ci = chunks_c.ci_load(bin_path)
-assert(ci ~= nil, 'Failed to load chunks.bin at '..bin_path)
+local ci
+local has_index = false
+
+if fn.filereadable(bin_path) == 1 then
+  ci = chunks_c.ci_load(bin_path)
+  if ci then
+    has_index = true
+  else
+    vim.notify('[RAG] Failed to load chunks.bin; semantic search disabled', vim.log.levels.WARN)
+  end
+else
+  vim.notify('[RAG] No chunks.bin found; semantic search disabled', vim.log.levels.INFO)
+end
 
 -- ── embedding helper ──────────────────────────────────────────────────────
 local function system_json(cmd)
@@ -64,6 +75,11 @@ end
 
 -- ── retrieve via C index ─────────────────────────────────────────────────
 local function retrieve(query)
+
+  if not has_index then
+    return {}  -- or maybe warn once
+  end
+
   -- embed query → C float array
   local qv  = embed(query)
   local dim = #qv
@@ -87,6 +103,11 @@ local function retrieve(query)
 end
 
 local function retrieve_meta(query)
+
+  if not has_index then
+    return {}  -- or maybe warn once
+  end
+
   local qv  = embed(query)
   local dim = #qv
   local q_c = ffi.new("float[?]", dim, qv)
