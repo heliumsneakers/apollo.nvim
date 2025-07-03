@@ -176,7 +176,7 @@ local function write_chunks_bin()
 end
 
 ---------------------------------------------------------------------
--- Build tree of items under cwd
+-- Build tree of items under cwd (recursive)
 ---------------------------------------------------------------------
 local uv = vim.loop
 local function is_dir(path)
@@ -186,9 +186,9 @@ end
 
 local function build_tree(base)
   local entries = {}
-  for _, path in ipairs(scan.scan_dir(base, { hidden=true, depth=1 })) do
+  for _, path in ipairs(scan.scan_dir(base, { hidden=true })) do
     local rel = path:sub(#base+2)
-    if rel ~= '' then
+    if rel and rel ~= '' then
       local parts = vim.split(rel, '/', { plain=true })
       local node = entries
       for i, part in ipairs(parts) do
@@ -223,7 +223,7 @@ local function flatten_tree(nodes, depth, list)
 end
 
 ---------------------------------------------------------------------
--- Picker UI state
+-- Picker UI state & functions
 ---------------------------------------------------------------------
 local picker = { items = {}, mark = {}, tree = {} }
 local ui_buf, ui_win
@@ -233,13 +233,13 @@ local function refresh()
   picker.items = {}
   flatten_tree(picker.tree, 0, picker.items)
   local lines = {}
-  for _, item in ipairs(picker.items) do
+  for idx, item in ipairs(picker.items) do
     local icon = item.node.type=='dir' and '📁' or '📄'
-    local sel = item.node.type=='file' and (picker.mark[item.node.path] and '✅' or '  ') or '  '
+    local sel  = item.node.type=='file' and (picker.mark[item.node.path] and '✅' or '  ') or '  '
     local indent = string.rep('  ', item.depth)
-    lines[#lines+1] = indent..sel..' '..icon..' '..item.node.name
+    lines[idx] = indent..sel..' '..icon..' '..item.node.name
   end
-  lines[#lines+1] = '-- <e> toggle, <CR> to build, <q> to quit --'
+  lines[#lines+1] = '-- <e> toggle file, <CR> to build, <q> to quit --'
   api.nvim_buf_set_option(ui_buf,'modifiable',true)
   api.nvim_buf_set_lines(ui_buf,0,-1,false,lines)
   api.nvim_buf_set_option(ui_buf,'modifiable',false)
@@ -256,7 +256,8 @@ end
 
 local function commit()
   local files = vim.tbl_keys(picker.mark)
-  api.nvim_win_close(ui_win,true); api.nvim_buf_delete(ui_buf,{force=true})
+  api.nvim_win_close(ui_win,true)
+  api.nvim_buf_delete(ui_buf,{force=true})
   chunks = {}
   for _,path in ipairs(files) do
     local lines = fn.readfile(path)
@@ -290,9 +291,10 @@ api.nvim_create_user_command('ApolloBuildChunks', function()
   refresh()
 end, {})
 
-
--- expose UI fns
+---------------------------------------------------------------------
+-- Module exports
+---------------------------------------------------------------------
 local M = {}
-M._toggle   = toggle
-M._commit   = commit
+M.toggle = toggle
+M.commit = commit
 return M
