@@ -49,11 +49,12 @@ if fn.filereadable(bin_path) == 1 then
   ci = chunks_c.ci_load(bin_path)
   if ci then
     has_index = true
+    vim.notify('[Apollo] Retrieved chunks.bin, semantic search enabled.')
   else
-    vim.notify('[RAG] Failed to load chunks.bin; semantic search disabled', vim.log.levels.WARN)
+    vim.notify('[Apollo] Failed to load chunks.bin, semantic search disabled.', vim.log.levels.WARN)
   end
 else
-  vim.notify('[RAG] No chunks.bin found; semantic search disabled', vim.log.levels.INFO)
+  vim.notify('[Apollo] No chunks.bin found, semantic search disabled.', vim.log.levels.INFO)
 end
 
 -- ── embedding helper ──────────────────────────────────────────────────────
