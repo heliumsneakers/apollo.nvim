@@ -175,104 +175,80 @@ local function write_chunks_bin()
              vim.log.levels.INFO)
 end
 
-
-local M = {}
 ---------------------------------------------------------------------
--- File-picker UI state
+-- Build tree of items under cwd
 ---------------------------------------------------------------------
-local picker = {
-  stack = { fn.getcwd() },    -- navigation stack of dirs
-  mark  = {},                 -- selected files
-  items = {},                 -- current display items
-}
-local ui_buf, ui_win
-
-local function scan_current()
-  local cwd = picker.stack[#picker.stack]
-  local dirs = scan.scan_dir(cwd, { only_dirs=true, depth=1, respect_gitignore=true })
-  local files = scan.scan_dir(cwd, { hidden=true, depth=1, respect_gitignore=true })
-  -- filter files by LSP types
-  local want = {}
-  for _,c in pairs(vim.lsp.get_active_clients()) do
-    for _,ft in ipairs(c.config.filetypes or {}) do want[ft]=true end
-  end
-  local filtered = {}
-  for _,f in ipairs(files) do
-    if fn.isdirectory(f)==0 then
-      local ext = fn.fnamemodify(f,':e')
-      if want[ext] then table.insert(filtered,f) end
+local function build_tree(base)
+  local entries = {}
+  for path in scan.scan_dir(base, { hidden=true }) do
+    local rel = path:sub(#base+2)
+    local parts = vim.split(rel, '/', { plain=true })
+    local node = entries
+    for i, part in ipairs(parts) do
+      local key = table.concat(vim.list_slice(parts,1,i), '/')
+      node[key] = node[key] or { name=part, path=base..'/'..key, type = vim.loop.fs_is_dir(base..'/'..key) and 'dir' or 'file', children = {} }
+      if i < #parts then node = node[key].children end
     end
   end
-  -- sort and merge
-  table.sort(dirs)
-  table.sort(filtered)
-  picker.items = {}
-  for _,d in ipairs(dirs) do table.insert(picker.items, {type='dir', path=d}) end
-  for _,f in ipairs(filtered) do table.insert(picker.items, {type='file', path=f}) end
+  return entries
 end
 
-local function refresh()
-  scan_current()
-  local lines = {}
-  for i,item in ipairs(picker.items) do
-    local prefix = (item.type=='dir' and '📁 ' or (picker.mark[item.path] and '✅ ' or '   '))
-    local label = fn.fnamemodify(item.path, item.type=='dir' and ':t' or ':p:.')
-    lines[i] = prefix .. label
+---------------------------------------------------------------------
+-- Flatten tree to list with indent
+---------------------------------------------------------------------
+local function flatten_tree(nodes, depth, list)
+  for _, node in pairs(nodes) do
+    table.insert(list, { node=node, depth=depth })
+    if node.type=='dir' then
+      flatten_tree(node.children, depth+1, list)
+    end
   end
-  lines[#lines+1] = '-- <e> to enter/toggle, <CR> to build, <q> to quit --'
+end
+
+---------------------------------------------------------------------
+-- Picker UI state
+---------------------------------------------------------------------
+local picker = { items = {}, mark = {}, tree = {} }
+local ui_buf, ui_win
+
+local function refresh()
+  picker.tree = build_tree(fn.getcwd())
+  picker.items = {}
+  flatten_tree(picker.tree, 0, picker.items)
+  local lines = {}
+  for _, item in ipairs(picker.items) do
+    local icon = item.node.type=='dir' and '📁' or '📄'
+    local sel = item.node.type=='file' and (picker.mark[item.node.path] and '✅' or '  ') or '  '
+    local indent = string.rep('  ', item.depth)
+    lines[#lines+1] = indent..sel..' '..icon..' '..item.node.name
+  end
+  lines[#lines+1] = '-- <e> toggle, <CR> to build, <q> to quit --'
   api.nvim_buf_set_option(ui_buf,'modifiable',true)
   api.nvim_buf_set_lines(ui_buf,0,-1,false,lines)
   api.nvim_buf_set_option(ui_buf,'modifiable',false)
 end
 
-function M._enter_toggle()
+local function toggle()
   local row = api.nvim_win_get_cursor(ui_win)[1]
-  local itm = picker.items[row]
-  if not itm then return end
-  if itm.type=='dir' then
-    table.insert(picker.stack, itm.path)
-  else
-    picker.mark[itm.path] = not picker.mark[itm.path]
-  end
-  refresh()
-end
-
-function M._go_up()
-  if #picker.stack > 1 then
-    table.remove(picker.stack)
+  local entry = picker.items[row]
+  if entry and entry.node.type=='file' then
+    picker.mark[entry.node.path] = not picker.mark[entry.node.path]
     refresh()
   end
 end
 
-function M._commit()
-  local sel = {}
-  for path,ok in pairs(picker.mark) do
-    if ok then table.insert(sel,path) end
-  end
-  api.nvim_win_close(ui_win,true)
-  api.nvim_buf_delete(ui_buf,{force=true})
-  ui_buf, ui_win = nil, nil
-  -- embed only selected files
-  M.embed_files(sel)
-end
-
-function M._close_ui()
-  if ui_win then api.nvim_win_close(ui_win,true) end
-  if ui_buf then api.nvim_buf_delete(ui_buf,{force=true}) end
-  ui_buf, ui_win = nil, nil
-end
-
----------------------------------------------------------------------
--- Embedding pipeline for selected files
----------------------------------------------------------------------
-function M.embed_files(files)
+local function commit()
+  local files = vim.tbl_keys(picker.mark)
+  api.nvim_win_close(ui_win,true); api.nvim_buf_delete(ui_buf,{force=true})
   chunks = {}
   for _,path in ipairs(files) do
     local lines = fn.readfile(path)
     if #lines>0 then
-      local ranges = cover_whole_file(get_function_ranges(fn.bufadd(path), ftd.detect_from_extension(path) or ftd.detect(path,{})), #lines)
+      local lang = ftd.detect_from_extension(path) or ftd.detect(path,{})
+      local ranges = cover_whole_file(get_function_ranges(fn.bufadd(path), lang), #lines)
       for _,r in ipairs(ranges) do
-        collect_chunk({ file=path, parent='', start_ln=r.start_ln, end_ln=r.end_ln }, vim.list_slice(lines,r.start_ln,r.end_ln))
+        collect_chunk({ file=path, parent='', start_ln=r.start_ln, end_ln=r.end_ln },
+                      vim.list_slice(lines,r.start_ln,r.end_ln))
       end
     end
   end
@@ -280,24 +256,26 @@ function M.embed_files(files)
 end
 
 ---------------------------------------------------------------------
--- UI command
+-- Command to open picker
 ---------------------------------------------------------------------
 api.nvim_create_user_command('ApolloBuildChunks', function()
-  picker.stack = { fn.getcwd() }
-  picker.mark  = {}
+  picker.mark = {}
   ui_buf = api.nvim_create_buf(false,true)
-  local h = math.min(#picker.stack[1], math.floor(vim.o.lines*0.6))
-  local w = math.floor(vim.o.columns*0.45)
+  local h = math.floor(vim.o.lines * 0.7)
+  local w = math.floor(vim.o.columns * 0.5)
   ui_win = api.nvim_open_win(ui_buf,true,{
-    relative='editor', row=(vim.o.lines-h)/2, col=(vim.o.columns-w)/2,
-    width=w, height=h, style='minimal', border='rounded',
+    relative='editor', row=1, col=1, width=w, height=h,
+    style='minimal', border='rounded',
   })
-  api.nvim_buf_set_keymap(ui_buf,'n','e','<Cmd>lua require"apollo.ragIndexer"._enter_toggle()<CR>',{nowait=true,noremap=true,silent=true})
-  api.nvim_buf_set_keymap(ui_buf,'n','u','<Cmd>lua require"apollo.ragIndexer"._go_up()<CR>',{nowait=true,noremap=true,silent=true})
-  api.nvim_buf_set_keymap(ui_buf,'n','<CR>','<Cmd>lua require"apollo.ragIndexer"._commit()<CR>',{nowait=true,noremap=true,silent=true})
-  api.nvim_buf_set_keymap(ui_buf,'n','q','<Cmd>lua require"apollo.ragIndexer"._close_ui()<CR>',{nowait=true,noremap=true,silent=true})
+  api.nvim_buf_set_keymap(ui_buf,'n','e','<Cmd>lua require"apollo.ragIndexer".toggle()<CR>',{nowait=true,noremap=true,silent=true})
+  api.nvim_buf_set_keymap(ui_buf,'n','<CR>','<Cmd>lua require"apollo.ragIndexer".commit()<CR>',{nowait=true,noremap=true,silent=true})
+  api.nvim_buf_set_keymap(ui_buf,'n','q','<Cmd>lua require"apollo.ragIndexer".commit()<CR>',{nowait=true,noremap=true,silent=true})
   refresh()
 end, {})
 
-return M
 
+-- expose UI fns
+local M = {}
+M._toggle   = toggle
+M._commit   = commit
+return M
