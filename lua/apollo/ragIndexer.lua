@@ -234,21 +234,35 @@ end
 ---------------------------------------------------------------------
 -- UI state & functions
 ---------------------------------------------------------------------
+local devicons_ok, devicons = pcall(require, 'nvim-web-devicons')
+
+-- then your existing:
 local function refresh()
   picker.tree = build_tree(fn.getcwd())
   picker.items = {}
   flatten_tree(picker.tree, 0, picker.items)
   local lines = {}
   for idx, item in ipairs(picker.items) do
-    local icon = item.node.type=='dir' and '📁' or '📄'
-    local sel  = item.node.type=='file' and (picker.mark[item.node.path] and '✅' or '  ') or '  '
+    local icon = ''
+    if item.node.type == 'file' then
+      if devicons_ok then
+        local fname = item.node.name
+        local ext   = fname:match('%.([^.]+)$') or ''
+        icon = devicons.get_icon(fname, ext, { default = true }) or ''
+      else
+        icon = ''
+      end
+    end
+    local sel    = item.node.type == 'file'
+                 and (picker.mark[item.node.path] and '' or ' ')
+                 or ' '
     local indent = string.rep('  ', item.depth)
-    lines[idx] = indent..sel..' '..icon..' '..item.node.name
+    lines[idx]  = indent .. sel .. ' ' .. icon .. ' ' .. item.node.name
   end
-  lines[#lines+1] = '-- <e> toggle file, <CR> to build, <q> to quit --'
-  api.nvim_buf_set_option(ui_buf,'modifiable',true)
-  api.nvim_buf_set_lines(ui_buf,0,-1,false,lines)
-  api.nvim_buf_set_option(ui_buf,'modifiable',false)
+  lines[#lines + 1] = '-- <e> toggle file/folder, <CR> to build, <q> to quit --'
+  api.nvim_buf_set_option(ui_buf, 'modifiable', true)
+  api.nvim_buf_set_lines(ui_buf, 0, -1, false, lines)
+  api.nvim_buf_set_option(ui_buf, 'modifiable', false)
 end
 
 local function toggle()
@@ -300,6 +314,7 @@ api.nvim_create_user_command('ApolloBuildChunks', function()
     relative='editor', row=1, col=1, width=w, height=h,
     style='minimal', border='rounded',
   })
+  api.nvim_win_set_option(ui_win, 'cursorline', true)
   api.nvim_buf_set_keymap(ui_buf,'n','e','<Cmd>lua require"apollo.ragIndexer".toggle()<CR>',{nowait=true,noremap=true,silent=true})
   api.nvim_buf_set_keymap(ui_buf,'n','<CR>','<Cmd>lua require"apollo.ragIndexer".commit()<CR>',{nowait=true,noremap=true,silent=true})
   api.nvim_buf_set_keymap(ui_buf,'n','q','<Cmd>lua require"apollo.ragIndexer".commit()<CR>',{nowait=true,noremap=true,silent=true})
