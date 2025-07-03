@@ -8,7 +8,7 @@ local cfg = {
   projectName  = fn.fnamemodify(fn.getcwd(), ':t'),
   embedEndpoint= 'http://127.0.0.1:8080/v1/embeddings',
   chatEndpoint = 'http://127.0.0.1:8080/v1/chat/completions',
-  topK         = 6, -- number of top ranking results
+  topK         = 12, -- number of top ranking results
 }
 
 -- ── UI state ─────────────────────────────────────────────────────────────
