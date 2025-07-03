@@ -86,6 +86,31 @@ local function retrieve(query)
   return results
 end
 
+local function retrieve_meta(query)
+  local qv  = embed(query)
+  local dim = #qv
+  local q_c = ffi.new("float[?]", dim, qv)
+
+  local K     = cfg.topK
+  local out_i = ffi.new("uint32_t[?]", K)
+  local out_s = ffi.new("double[?]",   K)
+
+  local cnt = tonumber(chunks_c.ci_search(ci, q_c, dim, K, out_i, out_s))
+  local results = {}
+  for i = 0, cnt-1 do
+    local idx   = out_i[i]
+    results[#results+1] = {
+      score    = out_s[i] * 100,
+      file     = ffi.string(chunks_c.ci_get_file(ci, idx)),
+      parent   = ffi.string(chunks_c.ci_get_parent(ci, idx)),
+      start_ln = tonumber(chunks_c.ci_get_start(ci, idx)),
+      end_ln   = tonumber(chunks_c.ci_get_end(ci, idx)),
+      text     = ffi.string(chunks_c.ci_get_text(ci, idx)),
+    }
+  end
+  return results
+end
+
 -- ── cleanup on exit ───────────────────────────────────────────────────────
 api.nvim_create_autocmd('VimLeavePre', {
   callback = function() chunks_c.ci_free(ci) end,
