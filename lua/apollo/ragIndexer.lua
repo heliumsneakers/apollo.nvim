@@ -178,16 +178,33 @@ end
 ---------------------------------------------------------------------
 -- Build tree of items under cwd
 ---------------------------------------------------------------------
+local uv = vim.loop
+local function is_dir(path)
+  local stat = uv.fs_stat(path)
+  return stat and stat.type == 'directory'
+end
+
 local function build_tree(base)
   local entries = {}
-  for path in scan.scan_dir(base, { hidden=true }) do
+  for _, path in ipairs(scan.scan_dir(base, { hidden=true, depth=1 })) do
     local rel = path:sub(#base+2)
-    local parts = vim.split(rel, '/', { plain=true })
-    local node = entries
-    for i, part in ipairs(parts) do
-      local key = table.concat(vim.list_slice(parts,1,i), '/')
-      node[key] = node[key] or { name=part, path=base..'/'..key, type = vim.loop.fs_is_dir(base..'/'..key) and 'dir' or 'file', children = {} }
-      if i < #parts then node = node[key].children end
+    if rel ~= '' then
+      local parts = vim.split(rel, '/', { plain=true })
+      local node = entries
+      for i, part in ipairs(parts) do
+        local key = table.concat(vim.list_slice(parts,1,i), '/')
+        if not node[key] then
+          node[key] = {
+            name = part,
+            path = base..'/'..key,
+            type = is_dir(base..'/'..key) and 'dir' or 'file',
+            children = {}
+          }
+        end
+        if i < #parts then
+          node = node[key].children
+        end
+      end
     end
   end
   return entries
@@ -197,10 +214,10 @@ end
 -- Flatten tree to list with indent
 ---------------------------------------------------------------------
 local function flatten_tree(nodes, depth, list)
-  for _, node in pairs(nodes) do
-    table.insert(list, { node=node, depth=depth })
-    if node.type=='dir' then
-      flatten_tree(node.children, depth+1, list)
+  for _, node_data in pairs(nodes) do
+    table.insert(list, { node=node_data, depth=depth })
+    if node_data.type=='dir' then
+      flatten_tree(node_data.children, depth+1, list)
     end
   end
 end
