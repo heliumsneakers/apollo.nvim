@@ -376,7 +376,7 @@ function M._send()
 
   -- build RAG prompt
   local ctx = retrieve(query)
-  local prompt = "You are a helpful code implementation AI, you are given some context snippets based on a Vector database search, choose the most relevant snippet from these top snippets to answer the users question, Choose the most explicit and relevant snippet based on its contents, that would best answer the users question, and use that in your logic to solving the users issue, question, etc...\n\n"
+  local prompt = "You are a helpful code implementation AI, you are given some context snippets based on a Vector database search, choose the most relevant snippet from these top snippets to answer the users question. To best answer the users question use some of your own intuiton mixed in, and use that in your logic to solving the users issue, question, etc...\n\n"
   for i,c in ipairs(ctx) do
     prompt = prompt..("----- snippet %d -----\n%s\n\n"):format(i,c)
   end
