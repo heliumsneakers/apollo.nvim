@@ -74,6 +74,30 @@ local function embed(text)
   return res.data[1].embedding
 end
 
+-- simplify query
+local function simplify_query(full_q)
+  local payload = {
+    model    = 'gemma3-4b-it',
+    messages = {
+      { role = 'system',
+        content = 'You are a helpful assistant. Given a user question, return a one-phrase summary that captures the core search intent. Keep it under 5 words, no punctuation.' },
+      { role = 'user', content = full_q },
+    },
+    stream = false,
+  }
+
+  local res = system_json{
+    'curl','-s','-X','POST', cfg.chatEndpoint,
+    '-H','Content-Type: application/json',
+    '-d', fn.json_encode(payload)
+  }
+  if res.error then error(res.error.message) end
+
+  -- assume the assistant responds in choices[1].message.content
+  return vim.trim(res.choices[1].message.content)
+end
+
+
 -- ── retrieve via C index ─────────────────────────────────────────────────
 local function retrieve(query)
 
@@ -374,14 +398,30 @@ function M._send()
   api.nvim_buf_set_lines(UI.input_buf,0,-1,false,{})
   if query=='' then return end
 
-  -- build RAG prompt
-  local ctx = retrieve(query)
-  local prompt = "You are a helpful code implementation AI, you are given some context snippets based on a Vector database search, choose the most relevant snippet from these top snippets to answer the users question. To best answer the users question use some of your own intuiton mixed in, and use that in your logic to solving the users issue, question, etc...\n\n"
-  for i,c in ipairs(ctx) do
-    prompt = prompt..("----- snippet %d -----\n%s\n\n"):format(i,c)
-  end
-  prompt = prompt.."Q: "..query.."\nA: "
+  local simple_q = simplify_query(query)
 
+  -- build RAG prompt
+  local meta = retrieve_meta(simple_q)
+
+  local prompt = [[
+ You are a helpful code implementation AI.  You will be given:
+  1) The user's original question.
+  2) A set of context snippets retrieved from semantic search.
+  Choose and combine the most relevant snippets, then answer the user's full question with code snippets as needed.
+
+ Original question:
+ ]] .. query .. [[
+
+ Retrieved snippets:
+ ]]
+
+  for i,hit in ipairs(meta) do
+    prompt = prompt
+    .. ("----- snippet %2d [%.1f%%] -----\n"):format(i, hit.score)
+    .. hit.text .. "\n\n"
+  end
+
+  prompt = prompt.."Q: "..query.."\nA: "
   _stream(prompt)
 end
 
