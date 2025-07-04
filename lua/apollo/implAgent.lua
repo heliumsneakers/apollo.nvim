@@ -101,10 +101,6 @@ local function retrieve(query)
     results[#results+1] = txt
   end
 
-  table.sort(results, function(a,b)
-    return a.score > b.score
-  end)
-
   return results
 end
 
