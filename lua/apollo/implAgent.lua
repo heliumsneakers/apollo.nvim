@@ -100,6 +100,11 @@ local function retrieve(query)
     local txt   = ffi.string(chunks_c.ci_get_text(ci, out_i[i]))
     results[#results+1] = txt
   end
+
+  table.sort(results, function(a,b)
+    return a.score > b.score
+  end)
+
   return results
 end
 
