@@ -408,7 +408,7 @@ function M._send()
   1) The user's original question.
   2) A set of context snippets retrieved from semantic search.
   Filter through these results and pick only the most relevant options.
-  Choose and combine the most relevant snippets, then answer the user's full question with code snippets as needed but only pertaining to the question at hand.
+  Choose and combine the most relevant snippets, then answer the user's full question with code snippets as needed but only pertaining ONLY to the question at hand.
   Keep replies short and simple, but straight to the point.
 
  Original question:
