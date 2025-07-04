@@ -130,6 +130,11 @@ local function retrieve_meta(query)
       text     = ffi.string(chunks_c.ci_get_text(ci, idx)),
     }
   end
+
+  table.sort(results, function(a,b)
+    return a.score > b.score
+  end)
+
   return results
 end
 
@@ -360,7 +365,7 @@ end
 function M.live_search()
   _open_live_search()
 end
- --- DEBUGGING ---
+--- DEBUGGING ---
 
 function M._send()
   local raw = api.nvim_buf_get_lines(UI.input_buf,0,-1,false)

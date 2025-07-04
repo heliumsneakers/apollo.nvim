@@ -111,13 +111,7 @@ uint32_t ci_search(ChunkIndex *ci,
       &sc_val,      
       (uint64_t)dim 
     );
-    // f32_cosine_distance_neon (
-    //   q,
-    //   c->emb,
-    //   &sc_val,
-    //   (uint64_t)dim
-    // );
-
+   
     if (sz < K) {
       heap[sz++] = (Pair){ sc_val, i };
       if (sz == K) {
