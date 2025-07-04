@@ -65,7 +65,7 @@ ChunkIndex* ci_load(const char *fname){
     c->text     = read_str(&ci->arena,&p);
     c->dim      = *(uint32_t*)p; p+=4;
     c->emb      = (float*)p;
-    // norm_neon(c->emb, c->dim);  // trying bare cosine accuracy
+    norm_neon(c->emb, c->dim); 
     p += sizeof(float)*c->dim;
   }
 
@@ -105,18 +105,18 @@ uint32_t ci_search(ChunkIndex *ci,
     if (c->dim != dim) continue;
 
     double sc_val;
-    // f32_dot_product_neon(
-    //   q,            
-    //   c->emb,       
-    //   &sc_val,      
-    //   (uint64_t)dim 
-    // );
-    f32_cosine_distance_neon (
-      q,
-      c->emb,
-      &sc_val,
-      (uint64_t)dim
+    f32_dot_product_neon(
+      q,            
+      c->emb,       
+      &sc_val,      
+      (uint64_t)dim 
     );
+    // f32_cosine_distance_neon (
+    //   q,
+    //   c->emb,
+    //   &sc_val,
+    //   (uint64_t)dim
+    // );
 
     if (sz < K) {
       heap[sz++] = (Pair){ sc_val, i };
