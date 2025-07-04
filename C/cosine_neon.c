@@ -6,7 +6,7 @@
 /* 
  *  Instead of my original implementation of the cosine distance function, I've decided to try doing a fast inverse square root
  *  implementation to normalize the Vector utilizing the Newtown-Raphson iteration method to gain more speed for a .01%-.02%
- *  error range. Instead of the Cosine Distance we take the dot product instead since the vectors are normalized.
+ *  error range. Instead of the Cosine Distance we take the dot product since the vectors are normalized.
  *
  *  The math and SIMD in this file are heavily inspired by Quake3 Fast Inverse Square Root, and Casey Muratori's 
  *  "Simple Code High Performance".
