@@ -123,7 +123,7 @@ local function collect_chunk(meta, lines)
       collect_chunk(vim.tbl_extend('force', meta, { start_ln=meta.start_ln+mid }),
                     vim.list_slice(lines,mid+1,#lines))
     else
-      vim.notify(('[RAG] embed failed %s:%d — %s')
+      vim.notify(('[Apollo] embed failed %s:%d — %s')
         :format(meta.file,meta.start_ln,err),vim.log.levels.WARN)
     end
     return
@@ -171,7 +171,7 @@ local function write_chunks_bin()
   end
 
   fh:close()
-  vim.notify(('[RAG] wrote %d chunks → %s'):format(#chunks, out_path),
+  vim.notify(('[Apollo] wrote %d chunks → %s'):format(#chunks, out_path),
              vim.log.levels.INFO)
 end
 

@@ -11,10 +11,11 @@ Menu.items = {}
 --------------------------------------------------
 local COMMANDS = {
   { cmd = "ApolloChat", label = "Apollo Chat" },
-  { cmd = "ApolloAsk", label = "Apollo RAG Impl" },
-  { cmd = "ApolloRagEmbed", label = "Embed src file" },
-  { cmd = "ApolloRagEmbedDirs", label = "Embed srcs from folder" },
-  { cmd = "ApolloQuit", label = "Reset Chat Context" },
+  { cmd = "ApolloAsk", label = "Apollo Context Chat" },
+  { cmd = "ApolloLive", label = "Vector Search Context" },
+  { cmd = "ApolloBuildChunks", label = "Embed src files" },
+  { cmd = "ApolloQuit", label = "Reset Chat" },
+  { cmd = "ApolloAskQuit", label = "Reset Context Chat" },
 }
 
 --------------------------------------------------
