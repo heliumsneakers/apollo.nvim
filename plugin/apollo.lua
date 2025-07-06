@@ -23,7 +23,7 @@ end
 load('apollo')               -- main chat UI (:ApolloChat / :ApolloQuit)
 load('apollo.menu')    -- floating command picker
 load('apollo.context_chat')     -- implementation wizard
-load('apollo.documenter')
+load('apollo.documenter').document()
 
 -- RAG indexer ---------------------------------------------------------------
 load('apollo.indexer', {
