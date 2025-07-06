@@ -1,4 +1,4 @@
--- lua/apollo/ragIndexer.lua
+-- lua/apollo/indexer.lua
 -- Build a binary `chunks.bin` via Tree-sitter + embedding, with directory-picker UI
 
 local scan   = require('plenary.scandir')

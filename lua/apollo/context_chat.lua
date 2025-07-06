@@ -1,4 +1,4 @@
--- lua/apollo/impl-agent.lua  –  RAG Q-and-A assistant (json-vec) with SQL prefilter
+-- lua/apollo/context_chat.lua  –  RAG Q-and-A assistant (json-vec) with SQL prefilter
 local M    = {}
 local api, fn = vim.api, vim.fn
 local ffi  = require('ffi')
