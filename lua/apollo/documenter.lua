@@ -17,18 +17,21 @@ local chatEndpoint  = 'http://127.0.0.1:8080/v1/chat/completions'
 local this_file   = debug.getinfo(1,'S').source:sub(2)
 local plugin_root = fn.fnamemodify(this_file, ':p:h:h:h')
 local lib_path    = plugin_root .. '/lib/chunks.dylib'
-local ci = ffi.load(lib_path)
+local chunks_c    = ffi.load(lib_path)
 
 ffi.cdef[[
   typedef struct ChunkIndex ChunkIndex;
+  struct ChunkIndex { uint8_t *arena_base; size_t arena_sz; uint32_t N; void *chunks; };
   ChunkIndex* ci_load(const char *filename);
   void         ci_free(ChunkIndex *ci);
-  uint32_t ci_count(ChunkIndex*);
-  uint32_t ci_get_idx(ChunkIndex*, uint32_t i);
-  const char* ci_get_file (ChunkIndex*, uint32_t idx);
-  const char* ci_get_text (ChunkIndex*, uint32_t idx);
-  const char* ci_get_parent (ChunkIndex*, uint32_t idx);
-  uint32_t    ci_get_start  (ChunkIndex*, uint32_t idx);
+  uint32_t ci_search(ChunkIndex*, const float*, uint32_t, uint32_t, uint32_t*, double*);
+  const char* ci_get_id     (ChunkIndex*, uint32_t);
+  const char* ci_get_parent (ChunkIndex*, uint32_t);
+  const char* ci_get_file   (ChunkIndex*, uint32_t);
+  const char* ci_get_ext    (ChunkIndex*, uint32_t);
+  uint32_t    ci_get_start  (ChunkIndex*, uint32_t);
+  uint32_t    ci_get_end    (ChunkIndex*, uint32_t);
+  const char* ci_get_text   (ChunkIndex*, uint32_t);
 ]]
 
 -- HELPER: JSON system call ------------------------------------------------
@@ -67,20 +70,20 @@ local function doc_chunk(prev_text, curr_text)
 end
 
 -- MAIN: load index --------------------------------------------------------
-local idx = ci.ci_load(bin_path)
+local idx = chunks_c.ci_load(bin_path)
 if not idx then error('Failed to load chunks.bin at ' .. bin_path) end
 
 -- gather all entries ------------------------------------------------------
-local total = ci.ci_count(idx)
+local total = tonumber(idx.N)
 local entries = {}
 for i = 0, total-1 do
-  local id = ci.ci_get_idx(idx, i)
   entries[#entries+1] = {
-    file   = ffi.string(ci.ci_get_file(idx, id)),
-    parent = ffi.string(ci.ci_get_parent(idx, id)),
-    start  = ci.ci_get_start(idx, id),
-    text   = ffi.string(ci.ci_get_text(idx, id)),
-    id     = id,
+    id     = ffi.string(chunks_c.ci_get_id(idx, i)),
+    file   = ffi.string(chunks_c.ci_get_file(idx, i)),
+    parent = ffi.string(chunks_c.ci_get_parent(idx, i)),
+    start  = chunks_c.ci_get_start(idx, i),
+    end_ln = chunks_c.ci_get_end(idx, i),
+    text   = ffi.string(chunks_c.ci_get_text(idx, i)),
   }
 end
 
@@ -114,6 +117,5 @@ for _, e in ipairs(entries) do
 end
 
 out_f:close()
-ci.ci_free(idx)
+chunks_c.ci_free(idx)
 print('Documentation generated at ' .. out_md)
-
