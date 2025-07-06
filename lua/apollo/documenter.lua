@@ -1,6 +1,9 @@
 -- generate_docs.lua
 -- Walk through a pre-built chunks.bin and generate a single Markdown documentation file
--- capturing every chunk (snippet) in source order, maintaining immediate context by including the previous block.
+-- capturing every chunk (snippet) in source order, maintaining immediate context by including the previous block,
+-- and wrapping code in language-specific fences based on file extension.
+
+local M = {}
 
 local ffi    = require('ffi')
 local fn     = vim.fn  -- if running under Neovim; otherwise replace with os.getenv or similar
@@ -41,16 +44,55 @@ local function system_json(cmd)
   return vim.json.decode(out)
 end
 
+-- HELPER: choose fence language from extension
+local function fence_lang(ext)
+  -- strip leading dot if present
+  local e = ext:gsub('^%.','')
+  -- simple mapping
+  local map = {
+    c    = 'c',
+    h    = 'c',
+    cpp  = 'cpp',
+    hpp  = 'cpp',
+    lua  = 'lua',
+    py   = 'python',
+    js   = 'javascript',
+    ts   = 'typescript',
+  }
+  return map[e] or ''
+end
+
 -- HELPER: document a single chunk via LLM, includes previous block
-local function doc_chunk(prev_text, curr_text)
-  local context_section = prev_text and ("Previous snippet:\n```c\n" .. prev_text .. "\n```\n") or ""
+local function doc_chunk(prev_text, curr_text, lang)
+  -- prepare fenced code markdown
+  local fence = '```' .. lang
+  local prev_section = ''
+  if prev_text then
+    prev_section = table.concat({
+      'Previous snippet:',
+      fence,
+      prev_text,
+      '```',
+      ''
+    }, '\n')
+  end
+
+  local curr_section = table.concat({
+    'Current snippet:',
+    fence,
+    curr_text,
+    '```',
+    ''
+  }, '\n')
+
   local prompt = table.concat({
-    "You are a documentation assistant.",
-    "Given the following code snippet and its immediate previous snippet for context, write a concise Markdown section describing what it does.",
-    context_section,
-    "Current snippet:\n```c\n" .. curr_text .. "\n```\n",
-    "Output:",
-  }, "\n")
+    'You are a documentation assistant.',
+    'Given the following code snippet and its immediate previous snippet for context,',
+    'write a concise Markdown section describing what it does.',
+    prev_section,
+    curr_section,
+    'Output:'
+  }, '\n')
 
   local payload = {
     model    = 'gemma3-4b-it',
@@ -78,19 +120,16 @@ local total = tonumber(idx.N)
 local entries = {}
 for i = 0, total-1 do
   entries[#entries+1] = {
-    id     = ffi.string(chunks_c.ci_get_id(idx, i)),
     file   = ffi.string(chunks_c.ci_get_file(idx, i)),
-    parent = ffi.string(chunks_c.ci_get_parent(idx, i)),
+    ext    = ffi.string(chunks_c.ci_get_ext(idx, i)),
     start  = chunks_c.ci_get_start(idx, i),
-    end_ln = chunks_c.ci_get_end(idx, i),
     text   = ffi.string(chunks_c.ci_get_text(idx, i)),
   }
 end
 
--- sort by file, then parent, then start ----------------------------------
+-- sort by file, then start -----------------------------------------------
 table.sort(entries, function(a,b)
   if a.file ~= b.file then return a.file < b.file end
-  if a.parent ~= b.parent then return a.parent < b.parent end
   return a.start < b.start
 end)
 
@@ -108,14 +147,39 @@ for _, e in ipairs(entries) do
     last_file = e.file
   end
 
+  -- determine fence language
+  local lang = fence_lang(e.ext)
+
   -- generate documentation with previous snippet as context
-  local doc = doc_chunk(prev_text, e.text)
+  local doc = doc_chunk(prev_text, e.text, lang)
   out_f:write(doc .. '\n\n')
 
-  -- update prev_text to current
+  -- update prev_text
   prev_text = e.text
 end
 
 out_f:close()
 chunks_c.ci_free(idx)
 print('Documentation generated at ' .. out_md)
+return M{}
+
+do
+  local fn  = vim.fn
+  local api = vim.api
+  -- resolve the path to generate_docs.lua in the same directory
+  local this_file   = debug.getinfo(1,'S').source:sub(2)
+  local plugin_root = fn.fnamemodify(this_file, ':p:h')
+  local doc_script  = plugin_root .. '/generate_docs.lua'
+
+  api.nvim_create_user_command('ApolloDocument', function()
+    vim.notify('[Apollo] Generating documentation…', vim.log.levels.INFO)
+    local result = fn.system({ 'lua', doc_script })
+    if fn.v.shell_error == 0 then
+      vim.notify('[Apollo] Documentation generated successfully.', vim.log.levels.INFO)
+    else
+      vim.notify('[Apollo] Documentation failed:\n' .. result, vim.log.levels.ERROR)
+    end
+  end, {
+    desc = 'Generate Markdown docs from chunks.bin via Apollo',
+  })
+end
