@@ -15,7 +15,7 @@ local chatEndpoint  = 'http://127.0.0.1:8080/v1/chat/completions'
 
 -- FFI C INDEX LOADING ----------------------------------------------------
 local this_file   = debug.getinfo(1,'S').source:sub(2)
-local plugin_root = fn.fnamemodify(this_file, ':p:h')
+local plugin_root = fn.fnamemodify(this_file, ':p:h:h:h')
 local lib_path    = plugin_root .. '/lib/chunks.dylib'
 local ci = ffi.load(lib_path)
 
