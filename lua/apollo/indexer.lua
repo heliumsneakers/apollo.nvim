@@ -315,9 +315,9 @@ api.nvim_create_user_command('ApolloBuildChunks', function()
     style='minimal', border='rounded',
   })
   api.nvim_win_set_option(ui_win, 'cursorline', true)
-  api.nvim_buf_set_keymap(ui_buf,'n','e','<Cmd>lua require"apollo.ragIndexer".toggle()<CR>',{nowait=true,noremap=true,silent=true})
-  api.nvim_buf_set_keymap(ui_buf,'n','<CR>','<Cmd>lua require"apollo.ragIndexer".commit()<CR>',{nowait=true,noremap=true,silent=true})
-  api.nvim_buf_set_keymap(ui_buf,'n','q','<Cmd>lua require"apollo.ragIndexer".commit()<CR>',{nowait=true,noremap=true,silent=true})
+  api.nvim_buf_set_keymap(ui_buf,'n','e','<Cmd>lua require"apollo.indexer".toggle()<CR>',{nowait=true,noremap=true,silent=true})
+  api.nvim_buf_set_keymap(ui_buf,'n','<CR>','<Cmd>lua require"apollo.indexer".commit()<CR>',{nowait=true,noremap=true,silent=true})
+  api.nvim_buf_set_keymap(ui_buf,'n','q','<Cmd>lua require"apollo.indexer".commit()<CR>',{nowait=true,noremap=true,silent=true})
   refresh()
 end, {})
 
