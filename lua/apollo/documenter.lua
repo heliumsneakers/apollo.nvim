@@ -5,6 +5,7 @@
 local M = {}
 local ffi = require('ffi')
 local fn  = vim.fn
+local api = vim.api
 
 -- CONFIGURATION -----------------------------------------------------------
 local bin_dir   = fn.stdpath('data')             -- default chunks.bin directory
