@@ -1,20 +1,17 @@
 -- generate_docs.lua
--- Walk through a pre-built chunks.bin and generate a single Markdown documentation file
--- capturing every chunk (snippet) in source order, maintaining immediate context by including the previous block,
--- and wrapping code in language-specific fences based on file extension.
+-- Module to generate Markdown documentation from chunks.bin.
+-- Usage: require('apollo.generate_docs').generate()
 
 local M = {}
-
-local ffi    = require('ffi')
-local fn     = vim.fn  -- if running under Neovim; otherwise replace with os.getenv or similar
+local ffi = require('ffi')
+local fn  = vim.fn
 
 -- CONFIGURATION -----------------------------------------------------------
 local bin_dir   = fn.stdpath('data')             -- default chunks.bin directory
 local project   = fn.fnamemodify(fn.getcwd(), ':t')
 local bin_path  = bin_dir .. '/' .. project .. '_chunks.bin'
 local out_md    = bin_dir .. '/' .. project .. '_docs.md'
-
-local chatEndpoint  = 'http://127.0.0.1:8080/v1/chat/completions'
+local chatEndpoint = 'http://127.0.0.1:8080/v1/chat/completions'
 
 -- FFI C INDEX LOADING ----------------------------------------------------
 local this_file   = debug.getinfo(1,'S').source:sub(2)
@@ -28,12 +25,9 @@ ffi.cdef[[
   ChunkIndex* ci_load(const char *filename);
   void         ci_free(ChunkIndex *ci);
   uint32_t ci_search(ChunkIndex*, const float*, uint32_t, uint32_t, uint32_t*, double*);
-  const char* ci_get_id     (ChunkIndex*, uint32_t);
-  const char* ci_get_parent (ChunkIndex*, uint32_t);
   const char* ci_get_file   (ChunkIndex*, uint32_t);
   const char* ci_get_ext    (ChunkIndex*, uint32_t);
   uint32_t    ci_get_start  (ChunkIndex*, uint32_t);
-  uint32_t    ci_get_end    (ChunkIndex*, uint32_t);
   const char* ci_get_text   (ChunkIndex*, uint32_t);
 ]]
 
@@ -46,45 +40,16 @@ end
 
 -- HELPER: choose fence language from extension
 local function fence_lang(ext)
-  -- strip leading dot if present
   local e = ext:gsub('^%.','')
-  -- simple mapping
-  local map = {
-    c    = 'c',
-    h    = 'c',
-    cpp  = 'cpp',
-    hpp  = 'cpp',
-    lua  = 'lua',
-    py   = 'python',
-    js   = 'javascript',
-    ts   = 'typescript',
-  }
+  local map = { c='c', h='c', cpp='cpp', hpp='cpp', lua='lua', py='python', js='javascript', ts='typescript' }
   return map[e] or ''
 end
 
 -- HELPER: document a single chunk via LLM, includes previous block
 local function doc_chunk(prev_text, curr_text, lang)
-  -- prepare fenced code markdown
   local fence = '```' .. lang
-  local prev_section = ''
-  if prev_text then
-    prev_section = table.concat({
-      'Previous snippet:',
-      fence,
-      prev_text,
-      '```',
-      ''
-    }, '\n')
-  end
-
-  local curr_section = table.concat({
-    'Current snippet:',
-    fence,
-    curr_text,
-    '```',
-    ''
-  }, '\n')
-
+  local prev_section = prev_text and table.concat({ 'Previous snippet:', fence, prev_text, '```', '' }, '\n') or ''
+  local curr_section = table.concat({ 'Current snippet:', fence, curr_text, '```', '' }, '\n')
   local prompt = table.concat({
     'You are a documentation assistant.',
     'Given the following code snippet and its immediate previous snippet for context,',
@@ -93,93 +58,43 @@ local function doc_chunk(prev_text, curr_text, lang)
     curr_section,
     'Output:'
   }, '\n')
-
-  local payload = {
-    model    = 'gemma3-4b-it',
-    messages = {
-      { role = 'system',  content = 'You are a helpful assistant specialized in code documentation.' },
-      { role = 'user',    content = prompt },
-    },
-    temperature = 0.2,
-  }
-  local res = system_json{
-    'curl','-s','-X','POST',chatEndpoint,
-    '-H','Content-Type: application/json',
-    '-d', vim.fn.json_encode(payload)
-  }
+  local payload = { model='gemma3-4b-it', messages={ {role='system',content='You are a helpful assistant specialized in code documentation.'}, {role='user',content=prompt} }, temperature=0.2 }
+  local res = system_json{ 'curl','-s','-X','POST',chatEndpoint, '-H','Content-Type: application/json', '-d', vim.fn.json_encode(payload) }
   if res.error then error(res.error.message) end
   return res.choices[1].message.content
 end
 
--- MAIN: load index --------------------------------------------------------
-local idx = chunks_c.ci_load(bin_path)
-if not idx then error('Failed to load chunks.bin at ' .. bin_path) end
-
--- gather all entries ------------------------------------------------------
-local total = tonumber(idx.N)
-local entries = {}
-for i = 0, total-1 do
-  entries[#entries+1] = {
-    file   = ffi.string(chunks_c.ci_get_file(idx, i)),
-    ext    = ffi.string(chunks_c.ci_get_ext(idx, i)),
-    start  = chunks_c.ci_get_start(idx, i),
-    text   = ffi.string(chunks_c.ci_get_text(idx, i)),
-  }
-end
-
--- sort by file, then start -----------------------------------------------
-table.sort(entries, function(a,b)
-  if a.file ~= b.file then return a.file < b.file end
-  return a.start < b.start
-end)
-
--- walk and document, keeping only immediate context -----------------------
-local out_f = io.open(out_md, 'w')
-out_f:write('# Project Documentation\nGenerated on ' .. os.date() .. '\n\n')
-
-local last_file = nil
-local prev_text = nil
-
-for _, e in ipairs(entries) do
-  if e.file ~= last_file then
-    out_f:write('## ' .. e.file .. '\n\n')
-    prev_text = nil
-    last_file = e.file
+-- MAIN GENERATOR ----------------------------------------------------------
+function M.document()
+  if fn.filereadable(bin_path) == 0 then
+    error('No chunks.bin found at ' .. bin_path)
   end
 
-  -- determine fence language
-  local lang = fence_lang(e.ext)
+  local idx = chunks_c.ci_load(bin_path)
+  if not idx then error('Failed to load chunks.bin at ' .. bin_path) end
 
-  -- generate documentation with previous snippet as context
-  local doc = doc_chunk(prev_text, e.text, lang)
-  out_f:write(doc .. '\n\n')
+  -- collect entries
+  local total = tonumber(idx.N)
+  local entries = {}
+  for i=0,total-1 do
+    entries[#entries+1] = { file=ffi.string(chunks_c.ci_get_file(idx,i)), ext=ffi.string(chunks_c.ci_get_ext(idx,i)), start=chunks_c.ci_get_start(idx,i), text=ffi.string(chunks_c.ci_get_text(idx,i)) }
+  end
 
-  -- update prev_text
-  prev_text = e.text
+  table.sort(entries, function(a,b) if a.file~=b.file then return a.file<b.file end return a.start<b.start end)
+
+  local out_f = io.open(out_md,'w')
+  out_f:write('# Project Documentation\nGenerated on '..os.date()..'\n\n')
+  local last_file, prev_text = nil, nil
+  for _,e in ipairs(entries) do
+    if e.file~=last_file then out_f:write('## '..e.file..'\n\n'); last_file, prev_text = e.file, nil end
+    local lang = fence_lang(e.ext)
+    local doc = doc_chunk(prev_text,e.text,lang)
+    out_f:write(doc..'\n\n')
+    prev_text = e.text
+  end
+  out_f:close()
+  chunks_c.ci_free(idx)
+  print('Documentation generated at '..out_md)
 end
 
-out_f:close()
-chunks_c.ci_free(idx)
-print('Documentation generated at ' .. out_md)
-return M{}
-
-do
-  local fn  = vim.fn
-  local api = vim.api
-  -- resolve the path to generate_docs.lua in the same directory
-  local this_file   = debug.getinfo(1,'S').source:sub(2)
-  local plugin_root = fn.fnamemodify(this_file, ':p:h')
-  local doc_script  = plugin_root .. '/generate_docs.lua'
-
-  api.nvim_create_user_command('ApolloDocument', function()
-    vim.notify('[Apollo] Generating documentation…', vim.log.levels.INFO)
-    local result = fn.system({ 'lua', doc_script })
-    if fn.v.shell_error == 0 then
-      vim.notify('[Apollo] Documentation generated successfully.', vim.log.levels.INFO)
-    else
-      vim.notify('[Apollo] Documentation failed:\n' .. result, vim.log.levels.ERROR)
-    end
-  end, {
-    desc = 'Generate Markdown docs from chunks.bin via Apollo',
-  })
-end
+return M
