@@ -14,6 +14,8 @@ local bin_path  = bin_dir .. '/' .. project .. '_chunks.bin'
 local out_md    = bin_dir .. '/' .. project .. '_docs.md'
 local chatEndpoint = 'http://127.0.0.1:8080/v1/chat/completions'
 
+local throttle_sec = 1.0
+
 -- FFI C INDEX LOADING ----------------------------------------------------
 local this_file   = debug.getinfo(1,'S').source:sub(2)
 local plugin_root = fn.fnamemodify(this_file, ':p:h:h:h')
