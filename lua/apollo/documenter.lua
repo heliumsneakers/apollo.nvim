@@ -97,4 +97,8 @@ function M.document()
   print('Documentation generated at '..out_md)
 end
 
+function M.setup()
+  api.nvim_create_user_command('ApolloDocument', M.document, {})
+end
+
 return M
