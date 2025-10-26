@@ -19,7 +19,7 @@ local throttle_sec = 1.0
 -- FFI C INDEX LOADING ----------------------------------------------------
 local this_file   = debug.getinfo(1,'S').source:sub(2)
 local plugin_root = fn.fnamemodify(this_file, ':p:h:h:h')
-local lib_path    = plugin_root .. '/lib/chunks.dylib'
+local lib_path    = plugin_root .. '/lib/libchunks.so'
 local chunks_c    = ffi.load(lib_path)
 
 ffi.cdef[[
