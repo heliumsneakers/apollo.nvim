@@ -1,6 +1,6 @@
 // chunks.c
 #include "chunks.h"
-#include "cosine_neon.h"
+#include "cosine_simd.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,7 +65,7 @@ ChunkIndex* ci_load(const char *fname){
     c->text     = read_str(&ci->arena,&p);
     c->dim      = *(uint32_t*)p; p+=4;
     c->emb      = (float*)p;
-    norm_neon(c->emb, c->dim); 
+    norm_simd(c->emb, c->dim); 
     p += sizeof(float)*c->dim;
   }
 
@@ -105,7 +105,7 @@ uint32_t ci_search(ChunkIndex *ci,
     if (c->dim != dim) continue;
 
     double sc_val;
-    f32_dot_product_neon(
+    f32_dot_product_simd(
       q,            
       c->emb,       
       &sc_val,      
