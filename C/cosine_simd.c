@@ -200,7 +200,7 @@ void norm_simd(float *v, uint32_t d) {
  *
  *      2) The big one calling sqrtf() TWICE :/ slowing the vector op speedups we gained anyways,
  *         this is of course also skipped using the approx reciprocal-sqrt and then just a simple scaling 
- *         of the vectors and getting the dot product. All adds and multiplys pretty much :) 
+ *         of the vectors and getting the dot product. All adds and multiplies pretty much :) 
  *  */
 
 // void f32_cosine_distance_neon(
